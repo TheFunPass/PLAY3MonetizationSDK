@@ -25,7 +25,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local PLUGIN_VERSION = "4.3.0"
 
 -- Remote version check URL (GitHub raw)
-local VERSION_URL = "https://raw.githubusercontent.com/TheFunPass/PLAY3MonetizationSDK/main/PLAY3RBX/distribution/version.json"
+local VERSION_URL = "https://raw.githubusercontent.com/TheFunPass/PLAY3MonetizationSDK/main/version.json"
 
 -- UUID pattern: 8-4-4-4-12 hex characters
 local API_KEY_PATTERN = "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
