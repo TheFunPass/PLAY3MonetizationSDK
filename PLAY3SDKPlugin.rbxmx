@@ -1,0 +1,5804 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<roblox version="4">
+  <Item class="Script" referent="RBX000003FC">
+    <Properties>
+      <string name="Name">PLAY3 SDK</string>
+      <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK Plugin
+
+	Installs the PLAY3 monetization SDK into your game.
+
+	Flow:
+	1. User enters API key
+	2. Plugin validates format
+	3. SDK is installed with API key pre-configured
+]]
+
+local ServerScriptService = game:GetService("ServerScriptService")
+local StarterPlayer = game:GetService("StarterPlayer")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Selection = game:GetService("Selection")
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local PLUGIN_VERSION = "4.3.0"
+
+-- Remote version check URL (GitHub raw)
+local VERSION_URL = "https://raw.githubusercontent.com/TheFunPass/PLAY3MonetizationSDK/main/PLAY3RBX/distribution/version.json"
+
+-- UUID pattern: 8-4-4-4-12 hex characters
+local API_KEY_PATTERN = "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+
+-- References to embedded SDK (children of this plugin script)
+local EmbeddedSDK = script:FindFirstChild("PLAY3SDK")
+local EmbeddedClient = script:FindFirstChild("PLAY3Client")
+local EmbeddedRemotes = script:FindFirstChild("PLAY3Remotes")
+
+-- Remote version info (populated async)
+local remoteVersionInfo = nil
+
+--============================================================
+-- PLAY3 BRAND COLORS
+--============================================================
+
+local COLORS = {
+	-- Primary
+	neonGreen = Color3.fromRGB(123, 255, 0),      -- #7BFF00
+	voidBlack = Color3.fromRGB(0, 0, 0),          -- #000000
+	surface = Color3.fromRGB(10, 10, 10),         -- #0A0A0A
+	white = Color3.fromRGB(255, 255, 255),        -- #FFFFFF
+
+	-- Secondary
+	playerBlue = Color3.fromRGB(91, 138, 247),    -- #5B8AF7
+	legacyRed = Color3.fromRGB(255, 91, 91),      -- #FF5B5B
+
+	-- Opacity variants (simulated with darker shades)
+	greenBorder = Color3.fromRGB(18, 38, 0),      -- ~15% green on black
+	greenBgLight = Color3.fromRGB(6, 13, 0),      -- ~5% green on black
+	whiteMuted = Color3.fromRGB(38, 38, 38),      -- ~15% white
+	whiteBorder = Color3.fromRGB(20, 20, 20),     -- ~8% white
+	textSecondary = Color3.fromRGB(128, 128, 128),-- ~50% white
+	textMuted = Color3.fromRGB(89, 89, 89),       -- ~35% white
+	textDim = Color3.fromRGB(51, 51, 51),         -- ~20% white
+}
+
+--============================================================
+-- PLUGIN UI
+--============================================================
+
+local toolbar = plugin:CreateToolbar("PLAY3")
+local installBtn = toolbar:CreateButton(
+	"PLAY3 SDK",
+	"Install or update PLAY3 monetization SDK",
+	"rbxassetid://114080028176175"
+)
+
+local widgetInfo = DockWidgetPluginGuiInfo.new(
+	Enum.InitialDockState.Float,
+	false, -- InitialEnabled (start closed)
+	true,  -- InitialEnabledShouldOverrideRestore (ignore previous state)
+	360, 420,
+	300, 360
+)
+
+local widget = plugin:CreateDockWidgetPluginGui("PLAY3SDK", widgetInfo)
+widget.Title = "PLAY3.AI"
+
+-- Main Frame
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(1, 0, 1, 0)
+frame.BackgroundColor3 = COLORS.surface
+frame.BorderSizePixel = 0
+frame.Parent = widget
+
+local mainPadding = Instance.new("UIPadding")
+mainPadding.PaddingTop = UDim.new(0, 16)
+mainPadding.PaddingBottom = UDim.new(0, 16)
+mainPadding.PaddingLeft = UDim.new(0, 16)
+mainPadding.PaddingRight = UDim.new(0, 16)
+mainPadding.Parent = frame
+
+local mainLayout = Instance.new("UIListLayout")
+mainLayout.SortOrder = Enum.SortOrder.LayoutOrder
+mainLayout.Padding = UDim.new(0, 12)
+mainLayout.Parent = frame
+
+--============================================================
+-- HEADER
+--============================================================
+
+-- Title with bolt icon
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 28)
+title.BackgroundTransparency = 1
+title.RichText = true
+title.Text = "<font color=\"#7BFF00\">⚡</font> PLAY3 SDK"
+title.TextColor3 = COLORS.white
+title.TextSize = 22
+title.Font = Enum.Font.GothamBlack
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.LayoutOrder = 1
+title.Parent = frame
+
+-- Subheading
+local subheading = Instance.new("TextLabel")
+subheading.Size = UDim2.new(1, 0, 0, 14)
+subheading.BackgroundTransparency = 1
+subheading.Text = "MONETIZATION AGENT"
+subheading.TextColor3 = COLORS.textMuted
+subheading.TextSize = 10
+subheading.Font = Enum.Font.GothamBold
+subheading.TextXAlignment = Enum.TextXAlignment.Left
+subheading.LayoutOrder = 2
+subheading.Parent = frame
+
+--============================================================
+-- TAB BAR
+--============================================================
+
+local tabBar = Instance.new("Frame")
+tabBar.Size = UDim2.new(1, 0, 0, 32)
+tabBar.BackgroundColor3 = COLORS.voidBlack
+tabBar.BorderSizePixel = 0
+tabBar.LayoutOrder = 3
+tabBar.Visible = false  -- Hidden until API key is valid
+tabBar.Parent = frame
+
+local tabBarCorner = Instance.new("UICorner")
+tabBarCorner.CornerRadius = UDim.new(0, 6)
+tabBarCorner.Parent = tabBar
+
+local tabBarLayout = Instance.new("UIListLayout")
+tabBarLayout.FillDirection = Enum.FillDirection.Horizontal
+tabBarLayout.SortOrder = Enum.SortOrder.LayoutOrder
+tabBarLayout.Parent = tabBar
+
+-- Setup Tab
+local setupTab = Instance.new("TextButton")
+setupTab.Size = UDim2.new(0.5, 0, 1, 0)
+setupTab.BackgroundColor3 = COLORS.neonGreen
+setupTab.Text = "SETUP"
+setupTab.TextColor3 = COLORS.voidBlack
+setupTab.TextSize = 12
+setupTab.Font = Enum.Font.GothamBold
+setupTab.AutoButtonColor = false
+setupTab.LayoutOrder = 1
+setupTab.Parent = tabBar
+
+local setupTabCorner = Instance.new("UICorner")
+setupTabCorner.CornerRadius = UDim.new(0, 6)
+setupTabCorner.Parent = setupTab
+
+-- Tools Tab
+local toolsTab = Instance.new("TextButton")
+toolsTab.Size = UDim2.new(0.5, 0, 1, 0)
+toolsTab.BackgroundColor3 = COLORS.voidBlack
+toolsTab.Text = "TOOLS"
+toolsTab.TextColor3 = COLORS.textMuted
+toolsTab.TextSize = 12
+toolsTab.Font = Enum.Font.GothamBold
+toolsTab.AutoButtonColor = false
+toolsTab.LayoutOrder = 2
+toolsTab.Parent = tabBar
+
+local toolsTabCorner = Instance.new("UICorner")
+toolsTabCorner.CornerRadius = UDim.new(0, 6)
+toolsTabCorner.Parent = toolsTab
+
+--============================================================
+-- SETUP PANEL
+--============================================================
+
+local setupPanel = Instance.new("Frame")
+setupPanel.Size = UDim2.new(1, 0, 0, 240)
+setupPanel.BackgroundTransparency = 1
+setupPanel.LayoutOrder = 4
+setupPanel.Parent = frame
+
+local setupLayout = Instance.new("UIListLayout")
+setupLayout.SortOrder = Enum.SortOrder.LayoutOrder
+setupLayout.Padding = UDim.new(0, 10)
+setupLayout.Parent = setupPanel
+
+-- Status
+local status = Instance.new("TextLabel")
+status.Name = "Status"
+status.Size = UDim2.new(1, 0, 0, 18)
+status.BackgroundTransparency = 1
+status.Text = "Enter your API key to get started"
+status.TextColor3 = COLORS.textSecondary
+status.TextSize = 12
+status.Font = Enum.Font.Code
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.LayoutOrder = 1
+status.Parent = setupPanel
+
+-- API Key Label
+local apiKeyLabel = Instance.new("TextLabel")
+apiKeyLabel.Size = UDim2.new(1, 0, 0, 16)
+apiKeyLabel.BackgroundTransparency = 1
+apiKeyLabel.Text = "API KEY"
+apiKeyLabel.TextColor3 = COLORS.neonGreen
+apiKeyLabel.TextSize = 10
+apiKeyLabel.Font = Enum.Font.GothamBold
+apiKeyLabel.TextXAlignment = Enum.TextXAlignment.Left
+apiKeyLabel.LayoutOrder = 2
+apiKeyLabel.Parent = setupPanel
+
+-- API Key Input Container
+local inputContainer = Instance.new("Frame")
+inputContainer.Size = UDim2.new(1, 0, 0, 38)
+inputContainer.BackgroundColor3 = COLORS.voidBlack
+inputContainer.BorderSizePixel = 0
+inputContainer.LayoutOrder = 3
+inputContainer.Parent = setupPanel
+
+local inputCorner = Instance.new("UICorner")
+inputCorner.CornerRadius = UDim.new(0, 6)
+inputCorner.Parent = inputContainer
+
+local inputStroke = Instance.new("UIStroke")
+inputStroke.Color = COLORS.whiteBorder
+inputStroke.Thickness = 1
+inputStroke.Parent = inputContainer
+
+-- API Key TextBox
+local apiKeyInput = Instance.new("TextBox")
+apiKeyInput.Size = UDim2.new(1, -16, 1, 0)
+apiKeyInput.Position = UDim2.new(0, 8, 0, 0)
+apiKeyInput.BackgroundTransparency = 1
+apiKeyInput.Text = ""
+apiKeyInput.PlaceholderText = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+apiKeyInput.PlaceholderColor3 = COLORS.textDim
+apiKeyInput.TextColor3 = COLORS.white
+apiKeyInput.TextSize = 12
+apiKeyInput.Font = Enum.Font.Code
+apiKeyInput.TextXAlignment = Enum.TextXAlignment.Left
+apiKeyInput.ClearTextOnFocus = false
+apiKeyInput.Parent = inputContainer
+
+-- Validation indicator
+local validationLabel = Instance.new("TextLabel")
+validationLabel.Size = UDim2.new(1, 0, 0, 14)
+validationLabel.BackgroundTransparency = 1
+validationLabel.Text = ""
+validationLabel.TextColor3 = COLORS.legacyRed
+validationLabel.TextSize = 10
+validationLabel.Font = Enum.Font.Code
+validationLabel.TextXAlignment = Enum.TextXAlignment.Left
+validationLabel.LayoutOrder = 4
+validationLabel.Parent = setupPanel
+
+-- Install/Update Button
+local actionBtn = Instance.new("TextButton")
+actionBtn.Size = UDim2.new(1, 0, 0, 42)
+actionBtn.BackgroundColor3 = COLORS.whiteMuted
+actionBtn.Text = "ENTER API KEY FIRST"
+actionBtn.TextColor3 = COLORS.textDim
+actionBtn.TextSize = 13
+actionBtn.Font = Enum.Font.GothamBlack
+actionBtn.AutoButtonColor = false
+actionBtn.LayoutOrder = 5
+actionBtn.Parent = setupPanel
+
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(0, 6)
+btnCorner.Parent = actionBtn
+
+-- Version label
+local versionLabel = Instance.new("TextLabel")
+versionLabel.Size = UDim2.new(1, 0, 0, 14)
+versionLabel.BackgroundTransparency = 1
+versionLabel.Text = "v" .. PLUGIN_VERSION
+versionLabel.TextColor3 = COLORS.textDim
+versionLabel.TextSize = 10
+versionLabel.Font = Enum.Font.Code
+versionLabel.TextXAlignment = Enum.TextXAlignment.Left
+versionLabel.LayoutOrder = 6
+versionLabel.Parent = setupPanel
+
+-- Help text
+local helpText = Instance.new("TextLabel")
+helpText.Size = UDim2.new(1, 0, 0, 28)
+helpText.BackgroundTransparency = 1
+helpText.RichText = true
+helpText.Text = "Get your API key at: <font color=\"#5B8AF7\">PLAY3.AI</font>"
+helpText.TextColor3 = COLORS.textMuted
+helpText.TextSize = 10
+helpText.Font = Enum.Font.Code
+helpText.TextXAlignment = Enum.TextXAlignment.Left
+helpText.LayoutOrder = 7
+helpText.Parent = setupPanel
+
+-- Plugin Update Banner (hidden by default)
+local updateBanner = Instance.new("Frame")
+updateBanner.Size = UDim2.new(1, 0, 0, 44)
+updateBanner.BackgroundColor3 = COLORS.playerBlue
+updateBanner.BorderSizePixel = 0
+updateBanner.LayoutOrder = 8
+updateBanner.Visible = false
+updateBanner.Parent = setupPanel
+
+local updateBannerCorner = Instance.new("UICorner")
+updateBannerCorner.CornerRadius = UDim.new(0, 6)
+updateBannerCorner.Parent = updateBanner
+
+local updateBannerPadding = Instance.new("UIPadding")
+updateBannerPadding.PaddingLeft = UDim.new(0, 10)
+updateBannerPadding.PaddingRight = UDim.new(0, 10)
+updateBannerPadding.Parent = updateBanner
+
+local updateBannerText = Instance.new("TextLabel")
+updateBannerText.Size = UDim2.new(1, 0, 1, 0)
+updateBannerText.BackgroundTransparency = 1
+updateBannerText.RichText = true
+updateBannerText.Text = "<b>Plugin update available!</b>\nDownload from Roblox"
+updateBannerText.TextColor3 = COLORS.white
+updateBannerText.TextSize = 10
+updateBannerText.Font = Enum.Font.Code
+updateBannerText.TextXAlignment = Enum.TextXAlignment.Left
+updateBannerText.TextYAlignment = Enum.TextYAlignment.Center
+updateBannerText.Parent = updateBanner
+
+--============================================================
+-- TOOLS PANEL
+--============================================================
+
+local toolsPanel = Instance.new("Frame")
+toolsPanel.Size = UDim2.new(1, 0, 0, 240)
+toolsPanel.BackgroundTransparency = 1
+toolsPanel.LayoutOrder = 5
+toolsPanel.Visible = false
+toolsPanel.Parent = frame
+
+local toolsLayout = Instance.new("UIListLayout")
+toolsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+toolsLayout.Padding = UDim.new(0, 12)
+toolsLayout.Parent = toolsPanel
+
+-- Tools Description
+local toolsDesc = Instance.new("TextLabel")
+toolsDesc.Size = UDim2.new(1, 0, 0, 32)
+toolsDesc.BackgroundTransparency = 1
+toolsDesc.Text = "Helper tools for setting up your SDK configuration."
+toolsDesc.TextColor3 = COLORS.textSecondary
+toolsDesc.TextSize = 12
+toolsDesc.Font = Enum.Font.Code
+toolsDesc.TextXAlignment = Enum.TextXAlignment.Left
+toolsDesc.TextWrapped = true
+toolsDesc.LayoutOrder = 1
+toolsDesc.Parent = toolsPanel
+
+-- List Products Button
+local listProductsBtn = Instance.new("TextButton")
+listProductsBtn.Size = UDim2.new(1, 0, 0, 50)
+listProductsBtn.BackgroundColor3 = COLORS.voidBlack
+listProductsBtn.Text = ""
+listProductsBtn.AutoButtonColor = true
+listProductsBtn.LayoutOrder = 2
+listProductsBtn.Parent = toolsPanel
+
+local listProductsBtnCorner = Instance.new("UICorner")
+listProductsBtnCorner.CornerRadius = UDim.new(0, 8)
+listProductsBtnCorner.Parent = listProductsBtn
+
+local listProductsBtnStroke = Instance.new("UIStroke")
+listProductsBtnStroke.Color = COLORS.whiteBorder
+listProductsBtnStroke.Thickness = 1
+listProductsBtnStroke.Parent = listProductsBtn
+
+local listProductsBtnLayout = Instance.new("UIListLayout")
+listProductsBtnLayout.FillDirection = Enum.FillDirection.Vertical
+listProductsBtnLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+listProductsBtnLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+listProductsBtnLayout.Padding = UDim.new(0, 2)
+listProductsBtnLayout.Parent = listProductsBtn
+
+local listProductsBtnPadding = Instance.new("UIPadding")
+listProductsBtnPadding.PaddingLeft = UDim.new(0, 12)
+listProductsBtnPadding.Parent = listProductsBtn
+
+local listProductsTitle = Instance.new("TextLabel")
+listProductsTitle.Size = UDim2.new(1, -12, 0, 16)
+listProductsTitle.BackgroundTransparency = 1
+listProductsTitle.Text = "📦 LIST DEVELOPER PRODUCTS"
+listProductsTitle.TextColor3 = COLORS.white
+listProductsTitle.TextSize = 12
+listProductsTitle.Font = Enum.Font.GothamBold
+listProductsTitle.TextXAlignment = Enum.TextXAlignment.Left
+listProductsTitle.Parent = listProductsBtn
+
+local listProductsSubtitle = Instance.new("TextLabel")
+listProductsSubtitle.Size = UDim2.new(1, -12, 0, 14)
+listProductsSubtitle.BackgroundTransparency = 1
+listProductsSubtitle.Text = "Print products to Output for CATALOG setup"
+listProductsSubtitle.TextColor3 = COLORS.textMuted
+listProductsSubtitle.TextSize = 10
+listProductsSubtitle.Font = Enum.Font.Code
+listProductsSubtitle.TextXAlignment = Enum.TextXAlignment.Left
+listProductsSubtitle.Parent = listProductsBtn
+
+-- Open Config Button
+local openConfigBtn = Instance.new("TextButton")
+openConfigBtn.Size = UDim2.new(1, 0, 0, 50)
+openConfigBtn.BackgroundColor3 = COLORS.voidBlack
+openConfigBtn.Text = ""
+openConfigBtn.AutoButtonColor = true
+openConfigBtn.LayoutOrder = 3
+openConfigBtn.Parent = toolsPanel
+
+local openConfigBtnCorner = Instance.new("UICorner")
+openConfigBtnCorner.CornerRadius = UDim.new(0, 8)
+openConfigBtnCorner.Parent = openConfigBtn
+
+local openConfigBtnStroke = Instance.new("UIStroke")
+openConfigBtnStroke.Color = COLORS.whiteBorder
+openConfigBtnStroke.Thickness = 1
+openConfigBtnStroke.Parent = openConfigBtn
+
+local openConfigBtnLayout = Instance.new("UIListLayout")
+openConfigBtnLayout.FillDirection = Enum.FillDirection.Vertical
+openConfigBtnLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+openConfigBtnLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+openConfigBtnLayout.Padding = UDim.new(0, 2)
+openConfigBtnLayout.Parent = openConfigBtn
+
+local openConfigBtnPadding = Instance.new("UIPadding")
+openConfigBtnPadding.PaddingLeft = UDim.new(0, 12)
+openConfigBtnPadding.Parent = openConfigBtn
+
+local openConfigTitle = Instance.new("TextLabel")
+openConfigTitle.Size = UDim2.new(1, -12, 0, 16)
+openConfigTitle.BackgroundTransparency = 1
+openConfigTitle.Text = "⚙️ OPEN CONFIG"
+openConfigTitle.TextColor3 = COLORS.white
+openConfigTitle.TextSize = 12
+openConfigTitle.Font = Enum.Font.GothamBold
+openConfigTitle.TextXAlignment = Enum.TextXAlignment.Left
+openConfigTitle.Parent = openConfigBtn
+
+local openConfigSubtitle = Instance.new("TextLabel")
+openConfigSubtitle.Size = UDim2.new(1, -12, 0, 14)
+openConfigSubtitle.BackgroundTransparency = 1
+openConfigSubtitle.Text = "Select the SDK Config module"
+openConfigSubtitle.TextColor3 = COLORS.textMuted
+openConfigSubtitle.TextSize = 10
+openConfigSubtitle.Font = Enum.Font.Code
+openConfigSubtitle.TextXAlignment = Enum.TextXAlignment.Left
+openConfigSubtitle.Parent = openConfigBtn
+
+-- Tools Note
+local toolsNote = Instance.new("TextLabel")
+toolsNote.Size = UDim2.new(1, 0, 0, 40)
+toolsNote.BackgroundTransparency = 1
+toolsNote.RichText = true
+toolsNote.Text = "<font color=\"#5B8AF7\">Tip:</font> Make sure your game is published to fetch Developer Products."
+toolsNote.TextColor3 = COLORS.textMuted
+toolsNote.TextSize = 10
+toolsNote.Font = Enum.Font.Code
+toolsNote.TextXAlignment = Enum.TextXAlignment.Left
+toolsNote.TextWrapped = true
+toolsNote.LayoutOrder = 4
+toolsNote.Parent = toolsPanel
+
+--============================================================
+-- STATE
+--============================================================
+
+local isValidApiKey = false
+local enteredApiKey = ""
+local currentTab = "setup"
+
+-- Plugin settings for persistence
+local SETTINGS_KEY = "PLAY3_API_KEY"
+
+local function saveApiKey(key)
+	pcall(function()
+		plugin:SetSetting(SETTINGS_KEY, key)
+	end)
+end
+
+local function loadApiKey()
+	local success, key = pcall(function()
+		return plugin:GetSetting(SETTINGS_KEY)
+	end)
+	if success and key and key ~= "" then
+		return key
+	end
+	return nil
+end
+
+--============================================================
+-- TAB SWITCHING
+--============================================================
+
+local function switchTab(tab)
+	currentTab = tab
+
+	if tab == "setup" then
+		setupTab.BackgroundColor3 = COLORS.neonGreen
+		setupTab.TextColor3 = COLORS.voidBlack
+		toolsTab.BackgroundColor3 = COLORS.voidBlack
+		toolsTab.TextColor3 = COLORS.textMuted
+		setupPanel.Visible = true
+		toolsPanel.Visible = false
+	else
+		setupTab.BackgroundColor3 = COLORS.voidBlack
+		setupTab.TextColor3 = COLORS.textMuted
+		toolsTab.BackgroundColor3 = COLORS.neonGreen
+		toolsTab.TextColor3 = COLORS.voidBlack
+		setupPanel.Visible = false
+		toolsPanel.Visible = true
+	end
+end
+
+--============================================================
+-- VERSION UTILITIES
+--============================================================
+
+local function parseVersion(v)
+	local maj, min, pat = (v or "0.0.0"):match("(%d+)%.(%d+)%.(%d+)")
+	return tonumber(maj) or 0, tonumber(min) or 0, tonumber(pat) or 0
+end
+
+local function isNewer(installed, pluginVer)
+	local a1, b1, c1 = parseVersion(installed)
+	local a2, b2, c2 = parseVersion(pluginVer)
+	if a2 > a1 then return true end
+	if a2 < a1 then return false end
+	if b2 > b1 then return true end
+	if b2 < b1 then return false end
+	return c2 > c1
+end
+
+local function getInstalledVersion()
+	local sdk = ServerScriptService:FindFirstChild("PLAY3SDK")
+	if not sdk then return nil end
+
+	local ver = sdk:FindFirstChild("_VERSION")
+	if ver and ver:IsA("StringValue") then
+		return ver.Value
+	end
+
+	local init = sdk:FindFirstChild("init")
+	if init and init:IsA("ModuleScript") then
+		local match = init.Source:match('VERSION%s*=%s*"([%d%.]+)"')
+		return match
+	end
+
+	return "0.0.0"
+end
+
+local function getInstalledApiKey()
+	local sdk = ServerScriptService:FindFirstChild("PLAY3SDK")
+	if not sdk then return nil end
+
+	local config = sdk:FindFirstChild("Config")
+	if config and config:IsA("ModuleScript") then
+		local key = config.Source:match('API_KEY%s*=%s*"([^"]*)"')
+		return key
+	end
+
+	return nil
+end
+
+--============================================================
+-- REMOTE VERSION CHECK
+--============================================================
+
+local function checkForPluginUpdate()
+	task.spawn(function()
+		local success, result = pcall(function()
+			local response = HttpService:GetAsync(VERSION_URL)
+			return HttpService:JSONDecode(response)
+		end)
+
+		if success and result then
+			remoteVersionInfo = result
+			local latestVersion = result.version
+
+			if latestVersion and isNewer(PLUGIN_VERSION, latestVersion) then
+				local changelog = result.changelog or "New version available"
+				updateBannerText.Text = "<b>Plugin v" .. latestVersion .. " available!</b>\n" .. changelog
+				updateBanner.Visible = true
+				print("[PLAY3.AI] Plugin update available: v" .. latestVersion)
+			else
+				print("[PLAY3.AI] Plugin is up to date (v" .. PLUGIN_VERSION .. ")")
+			end
+		else
+			print("[PLAY3.AI] Could not check for updates")
+		end
+	end)
+end
+
+--============================================================
+-- API KEY VALIDATION
+--============================================================
+
+local function validateApiKey(key)
+	if not key or key == "" then
+		return false, ""
+	end
+
+	key = key:match("^%s*(.-)%s*$")
+
+	if key:match(API_KEY_PATTERN) then
+		return true, key
+	else
+		return false, key
+	end
+end
+
+local function updateValidation()
+	local valid, cleanKey = validateApiKey(apiKeyInput.Text)
+	isValidApiKey = valid
+	enteredApiKey = cleanKey
+
+	-- Show tabs only when API key is valid (onboarding flow)
+	tabBar.Visible = valid
+
+	if apiKeyInput.Text == "" then
+		validationLabel.Text = ""
+		inputStroke.Color = COLORS.whiteBorder
+		actionBtn.BackgroundColor3 = COLORS.whiteMuted
+		actionBtn.TextColor3 = COLORS.textDim
+		actionBtn.Text = "ENTER API KEY FIRST"
+		actionBtn.AutoButtonColor = false
+	elseif valid then
+		validationLabel.Text = "✓ Valid API key format"
+		validationLabel.TextColor3 = COLORS.neonGreen
+		inputStroke.Color = COLORS.neonGreen
+		actionBtn.AutoButtonColor = true
+
+		-- Save API key for future sessions
+		saveApiKey(cleanKey)
+
+		local installed = getInstalledVersion()
+		if installed then
+			if isNewer(installed, PLUGIN_VERSION) then
+				actionBtn.BackgroundColor3 = COLORS.playerBlue
+				actionBtn.TextColor3 = COLORS.white
+				actionBtn.Text = "UPDATE SDK"
+			else
+				actionBtn.BackgroundColor3 = COLORS.whiteMuted
+				actionBtn.TextColor3 = COLORS.white
+				actionBtn.Text = "REINSTALL SDK"
+			end
+		else
+			actionBtn.BackgroundColor3 = COLORS.neonGreen
+			actionBtn.TextColor3 = COLORS.voidBlack
+			actionBtn.Text = "INSTALL SDK"
+		end
+	else
+		validationLabel.Text = "Invalid format. Expected: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+		validationLabel.TextColor3 = COLORS.legacyRed
+		inputStroke.Color = COLORS.legacyRed
+		actionBtn.BackgroundColor3 = COLORS.whiteMuted
+		actionBtn.TextColor3 = COLORS.textDim
+		actionBtn.Text = "INVALID API KEY"
+		actionBtn.AutoButtonColor = false
+	end
+end
+
+--============================================================
+-- CONFIG PRESERVATION
+--============================================================
+
+local function extractConfig(sdk)
+	local config = sdk:FindFirstChild("Config")
+	if config and config:IsA("ModuleScript") then
+		return config.Source
+	end
+	return nil
+end
+
+local function mergeConfig(oldSource, newSource, newApiKey)
+	local result = newSource or oldSource
+
+	if newApiKey and newApiKey ~= "" then
+		result = result:gsub('API_KEY%s*=%s*"[^"]*"', 'API_KEY = "' .. newApiKey .. '"')
+	end
+
+	if not oldSource then
+		return result
+	end
+
+	local catStart, catEnd = oldSource:find("CATALOG%s*=%s*%b{}")
+	if catStart then
+		local oldCatalog = oldSource:sub(catStart, catEnd)
+		if oldCatalog:find("%w+%s*=%s*") then
+			local newCatStart, newCatEnd = result:find("CATALOG%s*=%s*%b{}")
+			if newCatStart then
+				result = result:sub(1, newCatStart - 1) .. oldCatalog .. result:sub(newCatEnd + 1)
+			end
+		end
+	end
+
+	local gcStart = oldSource:find("\n%s*GAME_CONTEXT%s*=")
+	if gcStart and not oldSource:sub(math.max(1, gcStart-5), gcStart):find("%-%-") then
+		local gcEnd = gcStart
+		local depth = 0
+		local started = false
+		for i = gcStart, #oldSource do
+			local c = oldSource:sub(i, i)
+			if c == "{" then depth = depth + 1; started = true end
+			if c == "}" then depth = depth - 1 end
+			if started and depth == 0 then
+				gcEnd = i
+				break
+			end
+		end
+		local oldGC = oldSource:sub(gcStart, gcEnd)
+		local insertPoint = result:find("testGroupPercent")
+		if insertPoint then
+			result = result:sub(1, insertPoint - 1) .. oldGC .. ",\n\n\t" .. result:sub(insertPoint)
+		end
+	end
+
+	local testGroup = oldSource:match("testGroupPercent%s*=%s*(%d+)")
+	if testGroup then
+		result = result:gsub("testGroupPercent%s*=%s*%d+", "testGroupPercent = " .. testGroup)
+	end
+
+	local cacheTTL = oldSource:match("cacheTTL%s*=%s*(%d+)")
+	if cacheTTL then
+		result = result:gsub("cacheTTL%s*=%s*%d+", "cacheTTL = " .. cacheTTL)
+	end
+
+	local debug = oldSource:match("debug%s*=%s*(%w+)")
+	if debug then
+		result = result:gsub("debug%s*=%s*%w+", "debug = " .. debug)
+	end
+
+	return result
+end
+
+--============================================================
+-- INSTALLATION
+--============================================================
+
+local function installSDK()
+	if not isValidApiKey then
+		status.Text = "Please enter a valid API key first"
+		status.TextColor3 = COLORS.legacyRed
+		return
+	end
+
+	if not EmbeddedSDK then
+		status.Text = "Error: SDK not found in plugin!"
+		status.TextColor3 = COLORS.legacyRed
+		return
+	end
+
+	ChangeHistoryService:SetWaypoint("Before PLAY3 SDK Install")
+
+	status.Text = "Installing SDK..."
+	status.TextColor3 = COLORS.textSecondary
+	actionBtn.BackgroundColor3 = COLORS.whiteMuted
+	actionBtn.Text = "INSTALLING..."
+	actionBtn.AutoButtonColor = false
+
+	local existingSDK = ServerScriptService:FindFirstChild("PLAY3SDK")
+	local existingConfig = existingSDK and extractConfig(existingSDK)
+
+	if existingSDK then
+		existingSDK:Destroy()
+	end
+
+	local sps = StarterPlayer:FindFirstChild("StarterPlayerScripts")
+	if sps then
+		local oldClient = sps:FindFirstChild("PLAY3Client")
+		if oldClient then
+			oldClient:Destroy()
+		end
+	end
+
+	local oldRemotes = ReplicatedStorage:FindFirstChild("PLAY3Remotes")
+	if oldRemotes then
+		oldRemotes:Destroy()
+	end
+
+	local newSDK = EmbeddedSDK:Clone()
+
+	local versionVal = newSDK:FindFirstChild("_VERSION")
+	if not versionVal then
+		versionVal = Instance.new("StringValue")
+		versionVal.Name = "_VERSION"
+		versionVal.Parent = newSDK
+	end
+	versionVal.Value = PLUGIN_VERSION
+
+	local newConfig = newSDK:FindFirstChild("Config")
+	if newConfig then
+		newConfig.Source = mergeConfig(existingConfig, newConfig.Source, enteredApiKey)
+	end
+
+	newSDK.Parent = ServerScriptService
+
+	if EmbeddedClient then
+		if not sps then
+			sps = StarterPlayer:WaitForChild("StarterPlayerScripts", 5)
+		end
+		if sps then
+			local newClient = EmbeddedClient:Clone()
+			newClient.Parent = sps
+		end
+	end
+
+	if EmbeddedRemotes then
+		local newRemotes = EmbeddedRemotes:Clone()
+		newRemotes.Parent = ReplicatedStorage
+	end
+
+	ChangeHistoryService:SetWaypoint("After PLAY3 SDK Install")
+
+	status.Text = "SDK installed successfully!"
+	status.TextColor3 = COLORS.neonGreen
+
+	if newConfig then
+		Selection:Set({newConfig})
+	end
+
+	task.delay(2, function()
+		refreshStatus()
+	end)
+end
+
+--============================================================
+-- STATUS REFRESH
+--============================================================
+
+function refreshStatus()
+	local installed = getInstalledVersion()
+	local installedKey = getInstalledApiKey()
+	local savedKey = loadApiKey()
+
+	-- Pre-fill API key: prefer installed config, then saved setting
+	if apiKeyInput.Text == "" then
+		if installedKey and installedKey ~= "" then
+			apiKeyInput.Text = installedKey
+		elseif savedKey and savedKey ~= "" then
+			apiKeyInput.Text = savedKey
+		end
+	end
+
+	if installed then
+		versionLabel.Text = "Installed: v" .. installed .. " | Plugin: v" .. PLUGIN_VERSION
+
+		if isNewer(installed, PLUGIN_VERSION) then
+			status.Text = "Update available! Config will be preserved."
+			status.TextColor3 = COLORS.playerBlue
+		else
+			status.Text = "SDK is installed and up to date."
+			status.TextColor3 = COLORS.neonGreen
+		end
+	else
+		versionLabel.Text = "v" .. PLUGIN_VERSION
+		status.Text = "Enter your API key to get started"
+		status.TextColor3 = COLORS.textSecondary
+	end
+
+	updateValidation()
+end
+
+--============================================================
+-- EVENTS
+--============================================================
+
+installBtn.Click:Connect(function()
+	widget.Enabled = not widget.Enabled
+	if widget.Enabled then
+		refreshStatus()
+	end
+end)
+
+setupTab.MouseButton1Click:Connect(function()
+	switchTab("setup")
+end)
+
+toolsTab.MouseButton1Click:Connect(function()
+	switchTab("tools")
+end)
+
+apiKeyInput:GetPropertyChangedSignal("Text"):Connect(updateValidation)
+apiKeyInput.FocusLost:Connect(updateValidation)
+
+actionBtn.MouseButton1Click:Connect(function()
+	if isValidApiKey then
+		installSDK()
+	end
+end)
+
+-- List Developer Products
+listProductsBtn.MouseButton1Click:Connect(function()
+	listProductsTitle.Text = "📦 FETCHING..."
+
+	task.spawn(function()
+		local products = {}
+		local success, pages = pcall(function()
+			return MarketplaceService:GetDeveloperProductsAsync()
+		end)
+
+		if not success or not pages then
+			warn("[PLAY3.AI] Failed to fetch products. Make sure game is published.")
+			listProductsTitle.Text = "📦 LIST DEVELOPER PRODUCTS"
+			return
+		end
+
+		while true do
+			for _, item in ipairs(pages:GetCurrentPage()) do
+				table.insert(products, {
+					id = item.ProductId,
+					name = item.Name,
+					price = item.PriceInRobux or 0,
+				})
+			end
+			if pages.IsFinished then break end
+			pcall(function() pages:AdvanceToNextPageAsync() end)
+		end
+
+		table.sort(products, function(a, b) return a.price < b.price end)
+
+		print("\n========== YOUR DEVELOPER PRODUCTS ==========\n")
+
+		if #products == 0 then
+			print("No products found. Create them in Game Settings > Monetization.")
+		else
+			for _, p in ipairs(products) do
+				print(string.format("{ tier = X, price = %d, productId = %d }, -- %s", p.price, p.id, p.name))
+			end
+		end
+
+		print("\n==============================================")
+		print("Copy these lines into your CATALOG table in Config")
+		print("Replace 'X' with the tier number (1, 2, 3, etc.)\n")
+
+		listProductsTitle.Text = "📦 LIST DEVELOPER PRODUCTS"
+	end)
+end)
+
+-- Open Config
+openConfigBtn.MouseButton1Click:Connect(function()
+	local sdk = ServerScriptService:FindFirstChild("PLAY3SDK")
+	if sdk then
+		local config = sdk:FindFirstChild("Config")
+		if config then
+			Selection:Set({config})
+			print("[PLAY3.AI] Config selected - check Properties panel")
+		else
+			warn("[PLAY3.AI] Config not found in SDK")
+		end
+	else
+		warn("[PLAY3.AI] SDK not installed yet. Install it first from the Setup tab.")
+	end
+end)
+
+-- Initial
+task.spawn(function()
+	task.wait(0.5)
+	refreshStatus()
+	checkForPluginUpdate()
+end)
+
+print("[PLAY3.AI] SDK Plugin loaded - v" .. PLUGIN_VERSION)
+]]></ProtectedString>
+    </Properties>
+    
+    <Item class="Folder" referent="RBX000003FD">
+      <Properties>
+        <string name="Name">PLAY3SDK</string>
+      </Properties>
+      
+    <Item class="ModuleScript" referent="RBX000003E8">
+      <Properties>
+        <string name="Name">Config</string>
+        <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK Configuration
+
+	SETUP:
+	1. Add your API key
+	2. Define your product catalog
+	3. (Optional) Add game context for smarter AI decisions
+
+	The SDK learns from player state patterns set via:
+	PLAY3:SetState(player, "coins", 50)
+	PLAY3:SetState(player, "level", 5)
+	PLAY3:SetState(player, "deaths", 3)
+]]
+
+return {
+	--==========================================================
+	-- REQUIRED: Your PLAY3 API Key
+	--==========================================================
+	API_KEY = "",
+
+	--==========================================================
+	-- REQUIRED: Product Catalog
+	-- Define the products AI can recommend to players
+	--==========================================================
+	CATALOG = {
+		-- Example:
+		-- {
+		--     promptId = "coin_pack",
+		--     name = "Coin Pack",
+		--     category = "currency",
+		--     description = "Gives coins to buy items",
+		--     tiers = {
+		--         { tier = 1, price = 49, productId = 123456 },
+		--         { tier = 2, price = 99, productId = 123457 },
+		--         { tier = 3, price = 199, productId = 123458 },
+		--     },
+		-- },
+	},
+
+	--==========================================================
+	-- OPTIONAL: Game Context
+	-- Helps AI understand your game for smarter decisions
+	--==========================================================
+
+	-- GAME_CONTEXT = {
+	--     name = "My Awesome Game",
+	--     genre = "simulator",
+	--     description = "Players collect items and upgrade their base",
+	--
+	--     -- Explain what each SetState key means to the AI
+	--     -- This helps the AI understand your game and make smarter decisions
+	--     stateDefinitions = {
+	--         coins = "In-game currency. Low coins = good time for currency offers",
+	--         level = "Player progression level. Higher = more invested player",
+	--         inventoryFull = "True when inventory at max. Perfect for storage offers",
+	--         hasBoost = "True if player has active boost. False = boost opportunity",
+	--         deathCount = "Deaths this session. High count = frustrated player",
+	--         hasEverPurchased = "True if ever bought. False = needs lower tier pricing",
+	--     },
+	--
+	--     -- Explain what each product solves
+	--     products = {
+	--         coin_pack = "Currency for upgrades - good when player is stuck",
+	--         speed_boost = "Temporary speed increase - good for impatient players",
+	--         auto_collect = "Automates collection - good for busy players",
+	--         storage = "More inventory space - when inventory is full",
+	--     },
+	-- },
+
+	--==========================================================
+	-- OPTIONAL: A/B Testing
+	--==========================================================
+
+	-- Percentage of players in test group (default 100)
+	-- Set to 50 for 50% test, 50% control
+	-- Control group is tracked but doesn't see SDK offers
+	testGroupPercent = 100,
+
+	--==========================================================
+	-- OPTIONAL: Cache Settings
+	--==========================================================
+
+	-- How long cached decisions stay valid (seconds)
+	cacheTTL = 600, -- 10 minutes
+
+	--==========================================================
+	-- DEBUG
+	--==========================================================
+
+	-- Enable debug logging
+	debug = false,
+
+	--==========================================================
+	-- API SETTINGS (don't change unless instructed)
+	--==========================================================
+	API_URL = "https://play3-ai-assistant-605640375727.us-central1.run.app",
+}]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    <Item class="ModuleScript" referent="RBX000003E9">
+      <Properties>
+        <string name="Name">init</string>
+        <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK v4.2 - AI-Powered Monetization
+
+	Usage:
+		local PLAY3 = require(game.ServerScriptService.PLAY3SDK).Start("your-api-key")
+
+		-- Set player state (AI learns from patterns)
+		PLAY3:SetState(player, "coins", 50)
+		PLAY3:SetState(player, "level", 5)
+		PLAY3:SetState(player, "deaths", 3)
+
+	Tiered Pricing:
+		Products with aliasOf will automatically route to the original product.
+		Create tier dev products at different prices, SDK handles the rest.
+]]
+
+local Players = game:GetService("Players")
+local MarketplaceService = game:GetService("MarketplaceService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Core modules
+local Config = require(script.Parent.Config)
+local APIClient = require(script.Parent.Core.APIClient)
+local DecisionCache = require(script.Parent.Core.DecisionCache)
+local SignalBuilder = require(script.Parent.Core.SignalBuilder)
+local StateCollector = require(script.Parent.Collectors.StateCollector)
+local SessionCollector = require(script.Parent.Collectors.SessionCollector)
+local DeviceCollector = require(script.Parent.Collectors.DeviceCollector)
+local ProfileCollector = require(script.Parent.Collectors.ProfileCollector)
+
+--============================================================
+-- PLAY3 SDK
+--============================================================
+
+local PLAY3 = {}
+PLAY3.__index = PLAY3
+PLAY3.VERSION = "4.2.0"
+
+-- Simple Signal implementation
+local function createSignal()
+	local connections = {}
+	return {
+		Connect = function(_, fn)
+			table.insert(connections, fn)
+			return { Disconnect = function() end }
+		end,
+		Fire = function(_, ...)
+			for _, fn in ipairs(connections) do
+				task.spawn(fn, ...)
+			end
+		end,
+	}
+end
+
+-- Public signals
+PLAY3.OnShowOffer = createSignal()
+PLAY3.OnOfferResult = createSignal()
+
+-- Internal state
+local initialized = false
+local debugEnabled = false
+local collectors = {}
+local pendingOffers = {}
+local playerGroups = {}
+local pendingEvaluations = {}
+local playerPurchases = {}
+
+-- Product alias mapping: tierProductId -> aliasOf (original product)
+local productAliasMap = {}
+
+-- Configuration constants
+local EVAL_DEBOUNCE_TIME = 0.5
+local PENDING_OFFER_TIMEOUT = 300
+
+-- Result type constants
+local RESULT_PURCHASED = "purchased"
+local RESULT_DISMISSED = "dismissed"
+local RESULT_NATURAL = "natural_purchase"
+
+-- A/B group constants
+local GROUP_TEST = "test"
+local GROUP_CONTROL = "control"
+
+--============================================================
+-- START
+--============================================================
+
+function PLAY3.Start(apiKey, options)
+	if initialized then
+		warn("[PLAY3] Already initialized")
+		return PLAY3
+	end
+
+	options = options or {}
+
+	if apiKey then
+		Config.API_KEY = apiKey
+	end
+
+	debugEnabled = options.debugEnabled or Config.debugEnabled or false
+	PLAY3.testGroupPercent = options.testGroupPercent or Config.testGroupPercent or 100
+
+	PLAY3:_init()
+	return PLAY3
+end
+
+--============================================================
+-- INITIALIZATION
+--============================================================
+
+function PLAY3:_init()
+	if debugEnabled then
+		print("[PLAY3] Initializing SDK v" .. self.VERSION)
+	end
+
+	-- Build product alias map from catalog FIRST
+	self:_buildProductAliasMap()
+
+	-- Hook ProcessReceipt BEFORE game's handler
+	self:_hookProcessReceipt()
+
+	-- Core components
+	self.apiClient = APIClient.new(Config)
+	self.decisionCache = DecisionCache.new(Config)
+	self.signalBuilder = SignalBuilder.new(Config, collectors)
+
+	-- Collectors
+	collectors.state = StateCollector.new(Config)
+	collectors.session = SessionCollector.new(Config)
+	collectors.device = DeviceCollector.new(Config)
+	collectors.profile = ProfileCollector.new(Config)
+
+	collectors.device:init()
+	collectors.session:init()
+
+	self.collectors = collectors
+
+	-- Setup
+	self:_setupPurchaseTracking()
+	self:_setupUIRemotes()
+
+	-- Player handlers
+	Players.PlayerAdded:Connect(function(player)
+		self:_onPlayerJoin(player)
+	end)
+
+	Players.PlayerRemoving:Connect(function(player)
+		self:_onPlayerLeave(player)
+	end)
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.spawn(function()
+			self:_onPlayerJoin(player)
+		end)
+	end
+
+	initialized = true
+
+	if debugEnabled then
+		print("[PLAY3] SDK ready")
+		print("[PLAY3] Product aliases registered:", self:_countAliases())
+	end
+end
+
+--============================================================
+-- PRODUCT ALIAS SYSTEM
+--============================================================
+
+--[[
+	Build lookup table: tierProductId -> originalProductId
+	From catalog entries with aliasOf field
+]]
+function PLAY3:_buildProductAliasMap()
+	local catalog = Config.CATALOG or {}
+
+	for _, product in ipairs(catalog) do
+		if product.aliasOf and product.tiers then
+			for _, tierData in pairs(product.tiers) do
+				if tierData.productId then
+					productAliasMap[tierData.productId] = product.aliasOf
+
+					if debugEnabled then
+						print(string.format("[PLAY3] Alias: %d -> %d (%s)",
+							tierData.productId, product.aliasOf, product.promptId or "unknown"))
+					end
+				end
+			end
+		end
+	end
+end
+
+function PLAY3:_countAliases()
+	local count = 0
+	for _ in pairs(productAliasMap) do
+		count += 1
+	end
+	return count
+end
+
+--[[
+	Hook into ProcessReceipt to swap tier product IDs to their aliasOf product
+	This runs BEFORE the game's handler sees the purchase
+]]
+function PLAY3:_hookProcessReceipt()
+	-- Wait a frame to let the game set up their ProcessReceipt first
+	task.defer(function()
+		local originalHandler = MarketplaceService.ProcessReceipt
+
+		MarketplaceService.ProcessReceipt = function(receiptInfo)
+			-- Check if this product has an alias
+			local aliasProductId = productAliasMap[receiptInfo.ProductId]
+
+			if aliasProductId then
+				if debugEnabled then
+					print(string.format("[PLAY3] Alias redirect: %d -> %d",
+						receiptInfo.ProductId, aliasProductId))
+				end
+
+				-- Swap to the aliased product ID
+				receiptInfo.ProductId = aliasProductId
+			end
+
+			-- Call the game's original handler (or return NotProcessedYet if none)
+			if originalHandler then
+				return originalHandler(receiptInfo)
+			else
+				warn("[PLAY3] No original ProcessReceipt handler found")
+				return Enum.ProductPurchaseDecision.NotProcessedYet
+			end
+		end
+
+		if debugEnabled then
+			print("[PLAY3] ProcessReceipt hook installed")
+		end
+	end)
+end
+
+--[[
+	Resolve a product ID to its alias (if any)
+	Can be called manually if needed
+]]
+function PLAY3:ResolveProduct(productId)
+	return productAliasMap[productId] or productId
+end
+
+--============================================================
+-- PLAYER LIFECYCLE
+--============================================================
+
+function PLAY3:_onPlayerJoin(player)
+	collectors.session:startSession(player)
+	collectors.state:initPlayer(player)
+	collectors.profile:loadProfile(player)
+
+	playerPurchases[player.UserId] = {}
+
+	local groupRoll = player.UserId % 100
+	if groupRoll < self.testGroupPercent then
+		playerGroups[player.UserId] = GROUP_TEST
+	else
+		playerGroups[player.UserId] = GROUP_CONTROL
+	end
+
+	if debugEnabled then
+		print("[PLAY3] Player joined:", player.Name, "group:", playerGroups[player.UserId])
+	end
+end
+
+function PLAY3:_onPlayerLeave(player)
+	local sessionData = collectors.session:collect(player)
+	local stateData = collectors.state:collect(player)
+	local purchases = playerPurchases[player.UserId] or {}
+
+	local totalSpent = 0
+	local productIds = {}
+	for _, purchase in ipairs(purchases) do
+		totalSpent = totalSpent + (purchase.price or 0)
+		table.insert(productIds, purchase.productId)
+	end
+
+	self.apiClient:reportSessionEnd({
+		playerId = player.UserId,
+		sessionId = sessionData.sessionId,
+		sessionNumber = sessionData.sessionNumber or 1,
+		isFirstSession = sessionData.isFirstSession or false,
+		daysSinceLastSession = sessionData.daysSinceLastSession,
+		group = playerGroups[player.UserId] or GROUP_TEST,
+		duration = {
+			totalSec = sessionData.sessionDurationSec or 0,
+			activePlaySec = sessionData.sessionDurationSec or 0,
+		},
+		offers = {
+			shown = sessionData.offersShown or 0,
+			dismissed = sessionData.offersDismissed or 0,
+			purchased = sessionData.purchasesMade or 0,
+		},
+		spend = {
+			totalRobux = totalSpent,
+			productsPurchased = productIds,
+		},
+		finalState = stateData,
+		segment = {
+			spendTier = self:_getSpendTier(totalSpent),
+			engagementLevel = self:_getEngagementLevel(sessionData.sessionDurationSec or 0),
+		},
+	})
+
+	collectors.session:clearPlayer(player)
+	collectors.state:clearPlayer(player)
+	collectors.profile:clearPlayer(player)
+	self.decisionCache:clearPlayer(player.UserId)
+	pendingOffers[player.UserId] = nil
+	playerGroups[player.UserId] = nil
+	pendingEvaluations[player.UserId] = nil
+	playerPurchases[player.UserId] = nil
+end
+
+function PLAY3:_getSpendTier(totalSpent)
+	if totalSpent >= 1000 then return "whale"
+	elseif totalSpent >= 100 then return "dolphin"
+	elseif totalSpent > 0 then return "minnow"
+	else return "free" end
+end
+
+function PLAY3:_getEngagementLevel(durationSec)
+	if durationSec >= 1800 then return "high"
+	elseif durationSec >= 600 then return "medium"
+	else return "low" end
+end
+
+--============================================================
+-- PUBLIC API: SetState
+--============================================================
+
+function PLAY3:SetState(player, key, value)
+	if not initialized then return end
+
+	collectors.state:setState(player, key, value)
+
+	if debugEnabled then
+		print("[PLAY3] SetState:", player.Name, key, "=", value)
+	end
+
+	local playerId = player.UserId
+
+	if not pendingEvaluations[playerId] then
+		pendingEvaluations[playerId] = true
+
+		task.delay(EVAL_DEBOUNCE_TIME, function()
+			pendingEvaluations[playerId] = nil
+			if not player.Parent then return end
+			self:_evaluateState(player)
+		end)
+	end
+end
+
+--============================================================
+-- CACHE-FIRST EVALUATION
+--============================================================
+
+function PLAY3:_evaluateState(player)
+	local state = collectors.state:collect(player)
+	local playerId = player.UserId
+
+	local shouldCall, reason = self.decisionCache:shouldCallAI(state, playerId)
+
+	if shouldCall then
+		self.decisionCache:recordCheck(playerId)
+		local payload = self.signalBuilder:build(player)
+
+		if debugEnabled then
+			print("[PLAY3] Calling AI - reason:", reason)
+		end
+
+		local success, result = pcall(function()
+			return self.apiClient:request(payload)
+		end)
+
+		if success and result then
+			-- Handle both response formats: {decision:{...}} or {success:true, data:{decision:{...}}}
+			local decision = result.decision or (result.data and result.data.decision) or result.data or result
+			
+			if decision and type(decision) == 'table' then
+				self.decisionCache:store(state, decision)
+
+				if decision.show then
+					self.decisionCache:recordAttempt(state)
+					self:_showOffer(player, decision, state, payload)
+					
+					if debugEnabled then
+						print('[PLAY3] AI decision: show', decision.promptId, 'tier', decision.tier)
+					end
+				elseif debugEnabled then
+					print('[PLAY3] AI decision: suppress -', decision.suppressReason or 'no reason')
+				end
+			elseif debugEnabled then
+				warn('[PLAY3] Invalid decision format:', tostring(decision))
+			end
+		elseif not success then
+			warn('[PLAY3] AI call error:', result)
+		elseif debugEnabled then
+			warn('[PLAY3] AI call failed:', result and result.error or 'unknown')
+		end
+	else
+		local decision, shouldShow, cacheReason = self.decisionCache:getDecision(state)
+
+		if shouldShow and decision then
+			if debugEnabled then
+				print("[PLAY3] Using cache - reason:", cacheReason)
+			end
+			self.decisionCache:recordAttempt(state)
+			self:_showOffer(player, decision, state, nil)
+		elseif debugEnabled then
+			print("[PLAY3] Suppressed - reason:", reason or cacheReason)
+		end
+	end
+end
+
+--============================================================
+-- SHOW OFFER
+--============================================================
+
+function PLAY3:_showOffer(player, decision, state, payload)
+	local playerGroup = playerGroups[player.UserId] or GROUP_TEST
+	local playerId = player.UserId
+
+	local existingOffer = pendingOffers[playerId]
+	if existingOffer and existingOffer.offerTimestamp then
+		local age = os.time() - existingOffer.offerTimestamp
+		if age > PENDING_OFFER_TIMEOUT then
+			pendingOffers[playerId] = nil
+			existingOffer = nil
+		end
+	end
+
+	if existingOffer then
+		if debugEnabled then
+			print("[PLAY3] Offer already pending for:", player.Name)
+		end
+		return
+	end
+
+	if playerGroup == GROUP_CONTROL then
+		if debugEnabled then
+			print("[PLAY3] Control group - suppressing")
+		end
+		return
+	end
+
+	local promptId = decision.promptId
+	local tier = decision.tier or 1
+	local product = self:_findProduct(promptId)
+
+	if not product then
+		warn("[PLAY3] Product not found in catalog:", promptId)
+		return
+	end
+
+	local tierData = product.tiers and product.tiers[tier]
+	if not tierData then
+		tierData = product.tiers and product.tiers[1]
+		tier = 1
+	end
+
+	if not tierData then
+		warn("[PLAY3] No tier data for product:", promptId)
+		return
+	end
+
+	local sessionData = collectors.session:collect(player)
+
+	local sessionAtOffer = {
+		sessionId = sessionData.sessionId,
+		sessionNumber = sessionData.sessionNumber or 1,
+		sessionDurationSec = sessionData.sessionDurationSec or 0,
+		isFirstSession = sessionData.isFirstSession or false,
+		daysSinceLastSession = sessionData.daysSinceLastSession,
+		offersShown = sessionData.offersShown or 0,
+		offersDismissed = sessionData.offersDismissed or 0,
+		purchasesMade = sessionData.purchasesMade or 0,
+		failures = sessionData.failures or 0,
+		successes = sessionData.successes or 0,
+	}
+
+	local purchases = playerPurchases[playerId] or {}
+	local totalSpent = 0
+	for _, p in ipairs(purchases) do
+		totalSpent = totalSpent + (p.price or 0)
+	end
+
+	local segmentAtOffer = {
+		spendTier = self:_getSpendTier(totalSpent),
+		engagementLevel = self:_getEngagementLevel(sessionData.sessionDurationSec or 0),
+	}
+
+	pendingOffers[player.UserId] = {
+		promptId = promptId,
+		productId = tierData.productId,
+		price = tierData.price,
+		tier = tier,
+		offerTimestamp = os.time(),
+		stateAtOffer = state,
+		sessionAtOffer = sessionAtOffer,
+		segmentAtOffer = segmentAtOffer,
+	}
+
+	collectors.session:recordOfferShown(player, promptId)
+
+	if self.showOfferRemote then
+		self.showOfferRemote:FireClient(player, {
+			promptId = promptId,
+			productId = tierData.productId,
+			price = tierData.price,
+			tier = tier,
+			name = product.name,
+			description = product.description,
+		})
+	end
+
+	PLAY3.OnShowOffer:Fire(player, {
+		promptId = promptId,
+		productId = tierData.productId,
+		price = tierData.price,
+		tier = tier,
+		product = product,
+	})
+end
+
+function PLAY3:_findProduct(promptId)
+	local catalog = Config.CATALOG or {}
+	for _, product in ipairs(catalog) do
+		if product.promptId == promptId then
+			return product
+		end
+	end
+	return nil
+end
+
+--============================================================
+-- RECORD RESULT
+--============================================================
+
+function PLAY3:RecordResult(player, promptId, result)
+	if not initialized then return end
+
+	local offerData = pendingOffers[player.UserId]
+	local playerGroup = playerGroups[player.UserId] or GROUP_TEST
+
+	if debugEnabled then
+		print("[PLAY3] Result:", player.Name, promptId, result)
+	end
+
+	if offerData then
+		local timeToDecision = os.time() - (offerData.offerTimestamp or os.time())
+
+		if result == RESULT_PURCHASED then
+			local purchases = playerPurchases[player.UserId] or {}
+			table.insert(purchases, {
+				productId = offerData.productId,
+				price = offerData.price,
+			})
+			playerPurchases[player.UserId] = purchases
+		end
+
+		self.apiClient:reportOutcome({
+			playerId = player.UserId,
+			result = result,
+			productId = offerData.productId,
+			price = offerData.price,
+			timeToDecisionSec = timeToDecision,
+			group = playerGroup,
+			stateAtOffer = offerData.stateAtOffer,
+			sessionAtOffer = offerData.sessionAtOffer,
+			segmentAtOffer = offerData.segmentAtOffer,
+		})
+
+		if result == RESULT_PURCHASED then
+			self.decisionCache:recordConversion(offerData.stateAtOffer)
+			collectors.session:recordPurchase(player)
+
+			if debugEnabled then
+				local stats = self.decisionCache:getStats()
+				print("[PLAY3] Conversion! Cache:", stats.entries, "entries,",
+					string.format("%.1f%%", stats.overallRate * 100), "rate")
+			end
+		else
+			collectors.session:recordOfferDismissed(player)
+		end
+
+		pendingOffers[player.UserId] = nil
+	end
+
+	PLAY3.OnOfferResult:Fire(player, promptId, result)
+end
+
+--============================================================
+-- PURCHASE TRACKING
+--============================================================
+
+function PLAY3:_setupPurchaseTracking()
+	MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, isPurchased)
+		local player = Players:GetPlayerByUserId(userId)
+		if not player then return end
+
+		local offer = pendingOffers[userId]
+
+		-- Check both the tier product AND the aliased product
+		local resolvedProductId = self:ResolveProduct(productId)
+		local offerProductId = offer and self:ResolveProduct(offer.productId)
+
+		if offer and (offer.productId == productId or offerProductId == resolvedProductId) then
+			if isPurchased then
+				self:RecordResult(player, offer.promptId, RESULT_PURCHASED)
+			else
+				self:RecordResult(player, offer.promptId, RESULT_DISMISSED)
+			end
+		elseif isPurchased then
+			if debugEnabled then
+				print("[PLAY3] Natural purchase:", player.Name, productId)
+			end
+
+			local sessionData = collectors.session:collect(player)
+			local stateData = collectors.state:collect(player)
+
+			local purchases = playerPurchases[userId] or {}
+			table.insert(purchases, { productId = productId, price = 0 })
+			playerPurchases[userId] = purchases
+
+			local totalSpent = 0
+			for _, p in ipairs(purchases) do
+				totalSpent = totalSpent + (p.price or 0)
+			end
+
+			local sessionAtOffer = {
+				sessionId = sessionData.sessionId,
+				sessionNumber = sessionData.sessionNumber or 1,
+				sessionDurationSec = sessionData.sessionDurationSec or 0,
+				isFirstSession = sessionData.isFirstSession or false,
+				daysSinceLastSession = sessionData.daysSinceLastSession,
+				offersShown = sessionData.offersShown or 0,
+				offersDismissed = sessionData.offersDismissed or 0,
+				purchasesMade = sessionData.purchasesMade or 0,
+				failures = sessionData.failures or 0,
+				successes = sessionData.successes or 0,
+			}
+
+			self.apiClient:reportOutcome({
+				playerId = userId,
+				result = RESULT_NATURAL,
+				productId = productId,
+				price = 0,
+				timeToDecisionSec = 0,
+				group = playerGroups[userId] or GROUP_TEST,
+				stateAtOffer = stateData,
+				sessionAtOffer = sessionAtOffer,
+				segmentAtOffer = {
+					spendTier = self:_getSpendTier(totalSpent),
+					engagementLevel = self:_getEngagementLevel(sessionData.sessionDurationSec or 0),
+				},
+			})
+
+			collectors.session:recordPurchase(player)
+		end
+	end)
+end
+
+--============================================================
+-- UI REMOTES
+--============================================================
+
+function PLAY3:_setupUIRemotes()
+	local remotesFolder = ReplicatedStorage:FindFirstChild("PLAY3Remotes")
+	if not remotesFolder then
+		remotesFolder = Instance.new("Folder")
+		remotesFolder.Name = "PLAY3Remotes"
+		remotesFolder.Parent = ReplicatedStorage
+	end
+
+	local showOfferRemote = remotesFolder:FindFirstChild("ShowOffer")
+	if not showOfferRemote then
+		showOfferRemote = Instance.new("RemoteEvent")
+		showOfferRemote.Name = "ShowOffer"
+		showOfferRemote.Parent = remotesFolder
+	end
+
+	local offerResultRemote = remotesFolder:FindFirstChild("OfferResult")
+	if not offerResultRemote then
+		offerResultRemote = Instance.new("RemoteEvent")
+		offerResultRemote.Name = "OfferResult"
+		offerResultRemote.Parent = remotesFolder
+	end
+
+	offerResultRemote.OnServerEvent:Connect(function(player, promptId, result)
+		-- Client sends "dismissed" when player closes offer without buying
+		-- "purchased" is tracked via PromptProductPurchaseFinished, not here
+		if result == "dismissed" then
+			self:RecordResult(player, promptId, RESULT_DISMISSED)
+		end
+	end)
+
+	self.showOfferRemote = showOfferRemote
+end
+
+--============================================================
+-- TESTING & DEBUG
+--============================================================
+
+--[[
+	Force-show an offer for testing (only works with debug = true)
+	Usage: PLAY3:TestOffer(player, "coin_pack", 1)
+]]
+function PLAY3:TestOffer(player, promptId, tier)
+	if not debugEnabled then
+		warn("[PLAY3] TestOffer only works with debug = true in Config")
+		return false
+	end
+	
+	local product = self:_findProduct(promptId)
+	if not product then
+		warn("[PLAY3] TestOffer: Product not found:", promptId)
+		return false
+	end
+	
+	tier = tier or 1
+	local tierData = product.tiers and product.tiers[tier]
+	if not tierData then
+		warn("[PLAY3] TestOffer: Tier not found:", tier)
+		return false
+	end
+	
+	print("[PLAY3] TestOffer: Showing", promptId, "tier", tier, "to", player.Name)
+	
+	self:_showOffer(player, {
+		promptId = promptId,
+		tier = tier,
+		show = true,
+	}, {}, nil)
+	
+	return true
+end
+
+-- Reset PLAY3 learning data (useful during development)
+function PLAY3:Reset()
+	self.decisionCache:clear()
+	if debugEnabled then
+		print("[PLAY3] Reset complete - learning data cleared")
+	end
+end
+
+-- Legacy aliases
+PLAY3.GetCacheStats = function(self) return self.decisionCache:getStats() end
+PLAY3.ClearCache = function(self) self:Reset() end
+
+return PLAY3]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    <Item class="Folder" referent="RBX000003ED">
+      <Properties>
+        <string name="Name">Core</string>
+      </Properties>
+      
+    <Item class="ModuleScript" referent="RBX000003EA">
+      <Properties>
+        <string name="Name">APIClient</string>
+        <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK - API Client
+	Handles all HTTP communication with PLAY3 backend
+	Uses batching for outcomes and session_end to reduce HTTP overhead
+]]
+
+local HttpService = game:GetService("HttpService")
+
+local APIClient = {}
+APIClient.__index = APIClient
+
+-- API endpoints
+local ENDPOINTS = {
+	ACTIONS = "/actions",
+	OUTCOME = "/outcome",
+	OUTCOME_BATCH = "/outcome/batch",
+	SESSION_END = "/session_end",
+	SESSION_END_BATCH = "/session_end/batch",
+}
+
+-- Batching configuration
+local BATCH_INTERVAL = 5 -- Flush every 5 seconds
+local BATCH_MAX_SIZE = 20 -- Flush when queue reaches this size
+
+--[[
+	Simple hash function for player ID obfuscation
+	Note: For production, consider using a proper SHA256 library
+]]
+local function hashPlayerId(playerId)
+	local str = tostring(playerId)
+	local hash = 0
+	for i = 1, #str do
+		hash = (hash * 31 + string.byte(str, i)) % 2147483647
+	end
+	return string.format("%016x%016x%016x%016x", hash, hash * 7, hash * 13, hash * 17)
+end
+
+--[[
+	Get ISO 8601 timestamp
+]]
+local function getISOTimestamp()
+	return os.date("!%Y-%m-%dT%H:%M:%S") .. ".000Z"
+end
+
+function APIClient.new(config)
+	local self = setmetatable({}, APIClient)
+	self.config = config
+	self.baseUrl = config.API_URL or "https://api.play3.ai"
+	self.apiKey = config.API_KEY
+	self.debug = config.debug or false
+	self.gameId = tostring(game.GameId)
+
+	-- Batching queues
+	self.outcomeQueue = {}
+	self.sessionEndQueue = {}
+	self.isProcessing = false
+
+	-- Start batch processor
+	self:_startBatchProcessor()
+
+	return self
+end
+
+--[[
+	Start background batch processor
+]]
+function APIClient:_startBatchProcessor()
+	task.spawn(function()
+		while true do
+			task.wait(BATCH_INTERVAL)
+			self:_flushQueues()
+		end
+	end)
+end
+
+--[[
+	Flush all queues
+]]
+function APIClient:_flushQueues()
+	-- Flush outcomes
+	if #self.outcomeQueue > 0 then
+		local batch = self.outcomeQueue
+		self.outcomeQueue = {}
+		self:_sendOutcomeBatch(batch)
+	end
+
+	-- Flush session ends
+	if #self.sessionEndQueue > 0 then
+		local batch = self.sessionEndQueue
+		self.sessionEndQueue = {}
+		self:_sendSessionEndBatch(batch)
+	end
+end
+
+--[[
+	Send batch of outcomes
+]]
+function APIClient:_sendOutcomeBatch(batch)
+	local url = self.baseUrl .. ENDPOINTS.OUTCOME_BATCH
+
+	local body = HttpService:JSONEncode({
+		eventType = "outcome_batch",
+		gameId = self.gameId,
+		outcomes = batch,
+	})
+
+	task.spawn(function()
+		local success, response = pcall(function()
+			return HttpService:RequestAsync({
+				Url = url,
+				Method = "POST",
+				Headers = {
+					["Content-Type"] = "application/json",
+					["x-api-key"] = self.apiKey or "",
+				},
+				Body = body,
+			})
+		end)
+
+		if success and response.StatusCode == 200 then
+			if self.debug then
+				print("[PLAY3 API] Sent outcome batch:", #batch, "items")
+			end
+		elseif success and response.StatusCode == 404 then
+			-- Batch endpoint not available, fall back to individual sends
+			if self.debug then
+				print("[PLAY3 API] Batch endpoint not available, sending individually")
+			end
+			self:_sendOutcomesIndividually(batch)
+		else
+			if self.debug then
+				warn("[PLAY3 API] Outcome batch failed:", response and response.StatusCode or "error")
+			end
+			-- On failure, try individual sends
+			self:_sendOutcomesIndividually(batch)
+		end
+	end)
+end
+
+--[[
+	Fallback: send outcomes individually
+]]
+function APIClient:_sendOutcomesIndividually(batch)
+	local url = self.baseUrl .. ENDPOINTS.OUTCOME
+
+	for _, outcomeData in ipairs(batch) do
+		task.spawn(function()
+			local body = HttpService:JSONEncode({
+				eventType = "outcome",
+				gameId = self.gameId,
+				outcome = outcomeData,
+			})
+
+			pcall(function()
+				HttpService:RequestAsync({
+					Url = url,
+					Method = "POST",
+					Headers = {
+						["Content-Type"] = "application/json",
+						["x-api-key"] = self.apiKey or "",
+					},
+					Body = body,
+				})
+			end)
+		end)
+		task.wait(0.1) -- Small delay between individual sends
+	end
+end
+
+--[[
+	Send batch of session ends
+]]
+function APIClient:_sendSessionEndBatch(batch)
+	local url = self.baseUrl .. ENDPOINTS.SESSION_END_BATCH
+
+	local body = HttpService:JSONEncode({
+		eventType = "session_end_batch",
+		gameId = self.gameId,
+		sessions = batch,
+	})
+
+	task.spawn(function()
+		local success, response = pcall(function()
+			return HttpService:RequestAsync({
+				Url = url,
+				Method = "POST",
+				Headers = {
+					["Content-Type"] = "application/json",
+					["x-api-key"] = self.apiKey or "",
+				},
+				Body = body,
+			})
+		end)
+
+		if success and response.StatusCode == 200 then
+			if self.debug then
+				print("[PLAY3 API] Sent session_end batch:", #batch, "items")
+			end
+		elseif success and response.StatusCode == 404 then
+			-- Batch endpoint not available, fall back to individual sends
+			self:_sendSessionEndsIndividually(batch)
+		else
+			if self.debug then
+				warn("[PLAY3 API] Session end batch failed:", response and response.StatusCode or "error")
+			end
+			self:_sendSessionEndsIndividually(batch)
+		end
+	end)
+end
+
+--[[
+	Fallback: send session ends individually
+]]
+function APIClient:_sendSessionEndsIndividually(batch)
+	local url = self.baseUrl .. ENDPOINTS.SESSION_END
+
+	for _, sessionData in ipairs(batch) do
+		task.spawn(function()
+			local body = HttpService:JSONEncode({
+				eventType = "session_end",
+				gameId = self.gameId,
+				session = sessionData,
+			})
+
+			pcall(function()
+				HttpService:RequestAsync({
+					Url = url,
+					Method = "POST",
+					Headers = {
+						["Content-Type"] = "application/json",
+						["x-api-key"] = self.apiKey or "",
+					},
+					Body = body,
+				})
+			end)
+		end)
+		task.wait(0.1)
+	end
+end
+
+--[[
+	Make API request for pricing decision
+	Called when cache-first system determines we need AI input
+]]
+function APIClient:request(payload)
+	local url = self.baseUrl .. ENDPOINTS.ACTIONS
+
+	-- Format payload to match API expectations
+	local body = HttpService:JSONEncode({
+		action = "pricing",
+		playerId = tostring(payload.playerId),
+		context = payload,
+	})
+
+	local success, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = url,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["x-api-key"] = self.apiKey or "",
+			},
+			Body = body,
+		})
+	end)
+
+	if not success then
+		if self.debug then
+			warn("[PLAY3 API] Request failed:", response)
+		end
+		return { success = false, error = response }
+	end
+
+	if response.StatusCode ~= 200 then
+		if self.debug then
+			warn("[PLAY3 API] HTTP error:", response.StatusCode, response.Body)
+		end
+		return { success = false, error = "HTTP " .. response.StatusCode }
+	end
+
+	local decoded = HttpService:JSONDecode(response.Body)
+
+	-- Extract decision from response wrapper
+	if decoded.response and decoded.response.decision then
+		return decoded.response
+	elseif decoded.decision then
+		return decoded
+	else
+		return { success = true, data = decoded }
+	end
+end
+
+--[[
+	Report outcome (purchase, dismissed, natural_purchase)
+	Queued for batch sending
+
+	Expected data format from init.lua:
+	{
+		playerId = number,
+		result = "purchased" | "dismissed" | "natural_purchase",
+		productId = string,
+		price = number,
+		timeToDecisionSec = number,
+		group = "test" | "control",
+		stateAtOffer = { ... },
+		sessionAtOffer = { ... },
+		segmentAtOffer = { ... },
+	}
+]]
+function APIClient:reportOutcome(data)
+	-- Format to match schema
+	local outcomeData = {
+		playerId = hashPlayerId(data.playerId),
+		timestamp = getISOTimestamp(),
+
+		result = data.result,
+		productId = tostring(data.productId),
+		price = data.price or 0,
+		timeToDecisionSec = data.timeToDecisionSec or 0,
+
+		group = data.group or "test",
+
+		stateAtOffer = data.stateAtOffer or {},
+
+		sessionAtOffer = data.sessionAtOffer or {},
+
+		segmentAtOffer = data.segmentAtOffer or {},
+	}
+
+	table.insert(self.outcomeQueue, outcomeData)
+
+	-- Flush immediately if queue is full
+	if #self.outcomeQueue >= BATCH_MAX_SIZE then
+		local batch = self.outcomeQueue
+		self.outcomeQueue = {}
+		self:_sendOutcomeBatch(batch)
+	end
+
+	if self.debug then
+		print("[PLAY3 API] Outcome queued, queue size:", #self.outcomeQueue)
+	end
+end
+
+--[[
+	Report session end
+	Queued for batch sending
+
+	Expected data format from init.lua:
+	{
+		playerId = number,
+		sessionId = string,
+		sessionNumber = number,
+		isFirstSession = boolean,
+		daysSinceLastSession = number,
+		group = "test" | "control",
+		duration = { totalSec, activePlaySec },
+		offers = { shown, dismissed, purchased },
+		spend = { totalRobux, productsPurchased },
+		finalState = { ... },
+		segment = { ... },
+	}
+]]
+function APIClient:reportSessionEnd(data)
+	-- Format to match schema
+	local sessionData = {
+		playerId = hashPlayerId(data.playerId),
+		timestamp = getISOTimestamp(),
+
+		sessionId = data.sessionId or HttpService:GenerateGUID(false),
+		sessionNumber = data.sessionNumber or 1,
+		isFirstSession = data.isFirstSession or false,
+		daysSinceLastSession = data.daysSinceLastSession,
+
+		group = data.group or "test",
+
+		duration = data.duration or {
+			totalSec = data.sessionDurationSec or 0,
+			activePlaySec = data.sessionDurationSec or 0,
+		},
+
+		offers = data.offers or {
+			shown = data.offersShown or 0,
+			dismissed = data.offersDismissed or 0,
+			purchased = data.purchasesMade or 0,
+		},
+
+		spend = data.spend or {
+			totalRobux = data.totalRobuxSpent or 0,
+			productsPurchased = data.productsPurchased or {},
+		},
+
+		finalState = data.finalState or {},
+
+		segment = data.segment or {},
+	}
+
+	table.insert(self.sessionEndQueue, sessionData)
+
+	-- Flush immediately if queue is full
+	if #self.sessionEndQueue >= BATCH_MAX_SIZE then
+		local batch = self.sessionEndQueue
+		self.sessionEndQueue = {}
+		self:_sendSessionEndBatch(batch)
+	end
+
+	if self.debug then
+		print("[PLAY3 API] Session end queued, queue size:", #self.sessionEndQueue)
+	end
+end
+
+--[[
+	Force flush all queues (call on game shutdown if needed)
+]]
+function APIClient:flush()
+	self:_flushQueues()
+end
+
+return APIClient]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    <Item class="ModuleScript" referent="RBX000003EB">
+      <Properties>
+        <string name="Name">SignalBuilder</string>
+        <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK - Signal Builder
+	Builds API request payload from player state
+]]
+
+local HashLib = require(script.Parent.Parent.Analytics.PLAY3_Analytics.HashLib)
+
+local SignalBuilder = {}
+SignalBuilder.__index = SignalBuilder
+
+local function hashPlayerId(userId)
+	return HashLib.sha256(tostring(userId))
+end
+
+function SignalBuilder.new(config, collectors)
+	local self = setmetatable({}, SignalBuilder)
+	self.config = config
+	self.collectors = collectors
+	self._cachedCatalog = nil -- Cache catalog on first build
+	return self
+end
+
+function SignalBuilder:build(player)
+	local c = self.collectors
+
+	-- Collect from all collectors
+	local state = c.state and c.state:collect(player) or {}
+	local session = c.session and c.session:collect(player) or {}
+	local profile = c.profile and c.profile:collect(player) or {}
+	local device = c.device and c.device:collect(player) or {}
+
+	-- Build payload
+	local payload = {
+		playerId = hashPlayerId(player.UserId),
+		playerName = player.Name,
+
+		-- Game state from SetState
+		gameState = state,
+
+		-- Session info (includes offer timing for AI learning)
+		sessionContext = {
+			sessionId = session.sessionId,
+			sessionNumber = session.sessionNumber,
+			sessionDurationSec = session.sessionDurationSec or 0,
+			isFirstSession = session.isFirstSession,
+			-- Offer counts
+			offersShownThisSession = session.offersShown or 0,
+			offersDismissed = session.offersDismissed or 0,
+			purchasesMade = session.purchasesMade or 0,
+			-- Offer timing context - lets AI learn when NOT to show
+			lastOfferResult = session.lastOfferResult or "none",
+			lastOfferPromptId = session.lastOfferPromptId, -- Which product was last shown
+			secondsSinceLastOffer = session.secondsSinceLastOffer,
+			dismissRateThisSession = session.dismissRateThisSession or 0,
+		},
+
+		-- Player profile
+		playerProfile = {
+			isPremium = profile.isPremium or false,
+			accountAgeDays = profile.accountAgeDays or 0,
+			locale = profile.locale or "en-us",
+		},
+
+		-- Device info
+		device = {
+			platform = device.platform or "desktop",
+			isMobile = device.isMobile or false,
+			isConsole = device.isConsole or false,
+		},
+
+		-- Catalog for AI to choose from (cached)
+		catalog = self:getCatalog(),
+
+		-- Game context (optional, from Config)
+		gameContext = self.config.GAME_CONTEXT or nil,
+	}
+
+	return payload
+end
+
+--[[
+	Get catalog (cached after first build)
+]]
+function SignalBuilder:getCatalog()
+	if not self._cachedCatalog then
+		self._cachedCatalog = self:buildCatalog()
+	end
+	return self._cachedCatalog
+end
+
+--[[
+	Build catalog from config (internal)
+]]
+function SignalBuilder:buildCatalog()
+	local catalog = {}
+	local configCatalog = self.config.CATALOG or {}
+
+	for _, product in ipairs(configCatalog) do
+		local entry = {
+			promptId = product.promptId,
+			name = product.name,
+			category = product.category,
+			description = product.description,
+			tiers = {},
+		}
+
+		local tiers = product.tiers or {}
+		for _, tier in ipairs(tiers) do
+			table.insert(entry.tiers, {
+				tier = tier.tier,
+				price = tier.price,
+				productId = tostring(tier.productId),
+			})
+		end
+
+		table.insert(catalog, entry)
+	end
+
+	return catalog
+end
+
+--[[
+	Force rebuild catalog (if config changes at runtime)
+]]
+function SignalBuilder:refreshCatalog()
+	self._cachedCatalog = nil
+end
+
+return SignalBuilder]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    <Item class="ModuleScript" referent="RBX000003EC">
+      <Properties>
+        <string name="Name">DecisionCache</string>
+        <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK - Decision Cache
+	Cache-first decision system
+	- Stores AI decisions with outcome tracking
+	- Uses state fingerprints for pattern matching
+	- Only calls AI for new/unknown patterns
+]]
+
+local DecisionCache = {}
+DecisionCache.__index = DecisionCache
+
+-- Configuration
+local DEFAULT_TTL = 600 -- 10 minutes
+local MAX_CACHE_SIZE = 200
+local SIMILARITY_THRESHOLD = 0.7 -- 70% key match for fuzzy matching
+local MIN_ATTEMPTS_FOR_RATE = 3 -- Need 3+ attempts before trusting success rate
+local MIN_SUCCESS_RATE = 0.03 -- 3% minimum to keep showing
+local MIN_CHECK_INTERVAL = 30 -- Minimum seconds between evaluations per player
+
+function DecisionCache.new(config)
+	local self = setmetatable({}, DecisionCache)
+	self.config = config
+	self.cache = {} -- fingerprint -> entry
+	self.playerLastCheck = {} -- playerId -> timestamp
+	self.debug = config.debug or false
+	return self
+end
+
+--[[
+	Generate fingerprint from player state (SetState values)
+	Uses logarithmic bucketing for numbers - scales to any value range
+]]
+function DecisionCache:generateFingerprint(state)
+	local parts = {}
+
+	-- Sort keys for consistent fingerprint
+	local keys = {}
+	for k in pairs(state) do
+		table.insert(keys, k)
+	end
+	table.sort(keys)
+
+	for _, key in ipairs(keys) do
+		local value = state[key]
+		local bucketedValue
+
+		if type(value) == "number" then
+			-- Logarithmic bucketing: scales dynamically to any value range
+			-- 0, 1-9, 10-99, 100-999, 1k-9.9k, 10k-99k, 100k-999k, 1M+, etc.
+			if value == 0 then
+				bucketedValue = "0"
+			elseif value < 0 then
+				-- Handle negative numbers with same log scale
+				local absVal = math.abs(value)
+				local magnitude = math.floor(math.log10(absVal))
+				local bucket = math.pow(10, magnitude)
+				bucketedValue = "-" .. self:_formatBucket(bucket)
+			else
+				-- Positive numbers: bucket by order of magnitude
+				local magnitude = math.floor(math.log10(value))
+				local bucket = math.pow(10, magnitude)
+				bucketedValue = self:_formatBucket(bucket)
+			end
+		elseif type(value) == "boolean" then
+			bucketedValue = value and "true" or "false"
+		elseif type(value) == "string" then
+			bucketedValue = value
+		else
+			bucketedValue = tostring(value)
+		end
+
+		table.insert(parts, key .. ":" .. bucketedValue)
+	end
+
+	return table.concat(parts, "|")
+end
+
+--[[
+	Format bucket value with human-readable suffixes
+]]
+function DecisionCache:_formatBucket(bucket)
+	if bucket >= 1000000000 then
+		return string.format("%dB", bucket / 1000000000)
+	elseif bucket >= 1000000 then
+		return string.format("%dM", bucket / 1000000)
+	elseif bucket >= 1000 then
+		return string.format("%dk", bucket / 1000)
+	else
+		return tostring(math.floor(bucket))
+	end
+end
+
+--[[
+	Parse fingerprint back to key-value pairs
+]]
+function DecisionCache:parseFingerprint(fingerprint)
+	local parts = {}
+	for part in fingerprint:gmatch("[^|]+") do
+		local k, v = part:match("([^:]+):(.+)")
+		if k then parts[k] = v end
+	end
+	return parts
+end
+
+--[[
+	Calculate similarity between two fingerprints (0-1)
+]]
+function DecisionCache:calculateSimilarity(fp1, fp2)
+	local parts1 = self:parseFingerprint(fp1)
+	local parts2 = self:parseFingerprint(fp2)
+
+	-- Count all unique keys
+	local allKeys = {}
+	for k in pairs(parts1) do allKeys[k] = true end
+	for k in pairs(parts2) do allKeys[k] = true end
+
+	local total = 0
+	local matches = 0
+	for k in pairs(allKeys) do
+		total = total + 1
+		if parts1[k] == parts2[k] then
+			matches = matches + 1
+		end
+	end
+
+	return total > 0 and (matches / total) or 0
+end
+
+--[[
+	Find similar cached entry (fuzzy match)
+	Returns: entry, fingerprint, similarity OR nil
+]]
+function DecisionCache:findSimilar(state)
+	local targetFp = self:generateFingerprint(state)
+
+	-- First try exact match
+	if self.cache[targetFp] then
+		local entry = self.cache[targetFp]
+		if not self:isExpired(entry) then
+			-- Update last access time (LRU tracking)
+			entry.lastAccess = tick()
+			return entry, targetFp, 1.0
+		end
+	end
+
+	-- Fuzzy match - find best similar entry
+	local bestEntry, bestFp, bestSim = nil, nil, 0
+
+	for fp, entry in pairs(self.cache) do
+		if not self:isExpired(entry) then
+			local sim = self:calculateSimilarity(targetFp, fp)
+
+			-- EARLY EXIT: 90%+ match is good enough, skip remaining iterations
+			if sim >= 0.90 then
+				entry.lastAccess = tick()
+				if self.debug then
+					print("[PLAY3 Cache] Early match:", fp:sub(1,50), "sim:", string.format("%.0f%%", sim * 100))
+				end
+				return entry, fp, sim
+			end
+
+			if sim >= SIMILARITY_THRESHOLD and sim > bestSim then
+				-- Prefer entries with more data (more attempts)
+				local hasEnoughData = entry.attempts >= MIN_ATTEMPTS_FOR_RATE
+				if hasEnoughData or sim > 0.85 then
+					bestEntry, bestFp, bestSim = entry, fp, sim
+				end
+			end
+		end
+	end
+
+	if bestEntry then
+		-- Update last access time (LRU tracking)
+		bestEntry.lastAccess = tick()
+
+		if self.debug then
+			print("[PLAY3 Cache] Similar match:", bestFp:sub(1,50), "sim:", string.format("%.0f%%", bestSim * 100))
+		end
+		return bestEntry, bestFp, bestSim
+	end
+
+	return nil, nil, 0
+end
+
+--[[
+	Check if entry is expired
+]]
+function DecisionCache:isExpired(entry)
+	local ttl = self.config.cacheTTL or DEFAULT_TTL
+	return (tick() - entry.timestamp) > ttl
+end
+
+--[[
+	Should we call AI for this state?
+	Returns true if:
+	- No similar cached entry exists (new pattern)
+	- Cached entry has poor success rate AND enough data (needs better decision)
+
+	If we have a cached decision, USE IT to test if it converts.
+	Only call AI again if we have proof the current decision isn't working.
+]]
+function DecisionCache:shouldCallAI(state, playerId)
+	-- Rate limit per player
+	local now = tick()
+	local lastCheck = self.playerLastCheck[playerId] or 0
+	if (now - lastCheck) < MIN_CHECK_INTERVAL then
+		return false, "rate_limited"
+	end
+
+	local entry, fp, sim = self:findSimilar(state)
+
+	if not entry then
+		-- New pattern - call AI to get initial decision
+		if self.debug then
+			print("[PLAY3 Cache] New pattern, calling AI")
+		end
+		return true, "new_pattern"
+	end
+
+	-- We have a cached decision - use it to test if it converts
+	-- Don't call AI again until we have enough data to judge
+
+	if entry.attempts < MIN_ATTEMPTS_FOR_RATE then
+		-- Not enough data yet - keep using cached decision to gather data
+		if self.debug then
+			print("[PLAY3 Cache] Testing cached decision (" .. entry.attempts .. " attempts so far)")
+		end
+		return false, "testing_decision"
+	end
+
+	-- We have enough data - check success rate
+	local rate = self:getSuccessRate(entry)
+
+	if rate >= MIN_SUCCESS_RATE then
+		-- Pattern is converting well - keep using cached decision
+		if self.debug then
+			print("[PLAY3 Cache] Good rate (" .. string.format("%.1f%%", rate * 100) .. "), using cache")
+		end
+		return false, "good_rate"
+	end
+
+	-- Poor performance with enough data - try getting a new decision from AI
+	if math.random() < 0.2 then -- 20% chance to get new decision
+		if self.debug then
+			print("[PLAY3 Cache] Poor rate (" .. string.format("%.1f%%", rate * 100) .. "), trying new decision")
+		end
+		return true, "poor_rate_retry"
+	end
+
+	return false, "poor_rate_suppress"
+end
+
+--[[
+	Get success rate for an entry
+]]
+function DecisionCache:getSuccessRate(entry)
+	if not entry or not entry.attempts or entry.attempts == 0 then
+		return 0
+	end
+	return (entry.conversions or 0) / entry.attempts
+end
+
+--[[
+	Store a new decision from AI
+]]
+function DecisionCache:store(state, decision)
+	local fingerprint = self:generateFingerprint(state)
+
+	self:evictIfNeeded()
+
+	-- Preserve existing stats if updating
+	local existing = self.cache[fingerprint]
+
+	self.cache[fingerprint] = {
+		decision = decision,
+		timestamp = tick(),
+		attempts = existing and existing.attempts or 0,
+		conversions = existing and existing.conversions or 0,
+	}
+
+	if self.debug then
+		print("[PLAY3 Cache] Stored:", fingerprint:sub(1, 60))
+	end
+
+	return fingerprint
+end
+
+--[[
+	Record that we showed an offer (attempt)
+]]
+function DecisionCache:recordAttempt(state)
+	local fingerprint = self:generateFingerprint(state)
+	local entry = self.cache[fingerprint]
+
+	if entry then
+		entry.attempts = (entry.attempts or 0) + 1
+		entry.lastAttempt = tick()
+
+		if self.debug then
+			print("[PLAY3 Cache] Attempt recorded:", entry.attempts, "total")
+		end
+	else
+		-- Find similar and update that
+		local similar, similarFp = self:findSimilar(state)
+		if similar then
+			similar.attempts = (similar.attempts or 0) + 1
+			similar.lastAttempt = tick()
+		end
+	end
+end
+
+--[[
+	Record successful conversion (purchase)
+]]
+function DecisionCache:recordConversion(state)
+	local fingerprint = self:generateFingerprint(state)
+	local entry = self.cache[fingerprint]
+
+	if entry then
+		entry.conversions = (entry.conversions or 0) + 1
+		entry.lastConversion = tick()
+
+		local rate = self:getSuccessRate(entry)
+		if self.debug then
+			print("[PLAY3 Cache] Conversion! Rate:", string.format("%.1f%%", rate * 100))
+		end
+	else
+		-- Find similar and update that
+		local similar, similarFp = self:findSimilar(state)
+		if similar then
+			similar.conversions = (similar.conversions or 0) + 1
+			similar.lastConversion = tick()
+		end
+	end
+end
+
+--[[
+	Record player check time (for rate limiting)
+]]
+function DecisionCache:recordCheck(playerId)
+	self.playerLastCheck[playerId] = tick()
+end
+
+--[[
+	Get cached decision if available and good
+	Returns: decision, shouldShow, reason
+]]
+function DecisionCache:getDecision(state)
+	local entry, fp, sim = self:findSimilar(state)
+
+	if not entry then
+		return nil, false, "no_cache"
+	end
+
+	-- Check success rate
+	local rate = self:getSuccessRate(entry)
+	if entry.attempts >= MIN_ATTEMPTS_FOR_RATE and rate < MIN_SUCCESS_RATE then
+		return entry.decision, false, "poor_rate"
+	end
+
+	-- Good cached decision
+	return entry.decision, entry.decision.show, "cache_hit"
+end
+
+--[[
+	Evict entries if cache is full
+	Priority: expired first, then poor performers, then LRU
+]]
+function DecisionCache:evictIfNeeded()
+	local count = 0
+	local now = tick()
+
+	-- First pass: remove expired entries
+	local toRemove = {}
+	for fp, entry in pairs(self.cache) do
+		count = count + 1
+		if self:isExpired(entry) then
+			table.insert(toRemove, fp)
+		end
+	end
+
+	for _, fp in ipairs(toRemove) do
+		self.cache[fp] = nil
+		count = count - 1
+	end
+
+	-- If still over limit, evict by score (poor rate + LRU)
+	while count >= MAX_CACHE_SIZE do
+		local worst = nil
+		local worstScore = math.huge
+
+		for fp, entry in pairs(self.cache) do
+			-- Score combines: success rate, recency of access, and attempt count
+			local rate = self:getSuccessRate(entry)
+			local lastAccess = entry.lastAccess or entry.timestamp
+			local age = now - lastAccess
+			local attempts = entry.attempts or 0
+
+			-- Higher score = keep, Lower score = evict
+			-- Good rate + recent access + more data = keep
+			local score = (rate * 100) + (attempts * 5) - (age / 60)
+
+			if score < worstScore then
+				worstScore = score
+				worst = fp
+			end
+		end
+
+		if worst then
+			self.cache[worst] = nil
+			count = count - 1
+		else
+			break
+		end
+	end
+end
+
+--[[
+	Clear all cache
+]]
+function DecisionCache:clear()
+	self.cache = {}
+	self.playerLastCheck = {}
+	if self.debug then
+		print("[PLAY3 Cache] Cleared")
+	end
+end
+
+--[[
+	Clear player rate limit (on leave)
+]]
+function DecisionCache:clearPlayer(playerId)
+	self.playerLastCheck[playerId] = nil
+end
+
+--[[
+	Get cache statistics
+]]
+function DecisionCache:getStats()
+	local count = 0
+	local totalAttempts = 0
+	local totalConversions = 0
+
+	for _, entry in pairs(self.cache) do
+		count = count + 1
+		totalAttempts = totalAttempts + (entry.attempts or 0)
+		totalConversions = totalConversions + (entry.conversions or 0)
+	end
+
+	return {
+		entries = count,
+		totalAttempts = totalAttempts,
+		totalConversions = totalConversions,
+		overallRate = totalAttempts > 0 and (totalConversions / totalAttempts) or 0,
+	}
+end
+
+return DecisionCache]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    </Item>
+    <Item class="Folder" referent="RBX000003F2">
+      <Properties>
+        <string name="Name">Collectors</string>
+      </Properties>
+      
+    <Item class="ModuleScript" referent="RBX000003EE">
+      <Properties>
+        <string name="Name">ProfileCollector</string>
+        <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK - Profile Collector
+	Collects player profile data (Roblox data, avatar, social)
+]]
+
+local Players = game:GetService("Players")
+local GroupService = game:GetService("GroupService")
+local HttpService = game:GetService("HttpService")
+
+local ProfileCollector = {}
+ProfileCollector.__index = ProfileCollector
+
+local playerProfiles = {}
+
+-- Global asset value cache (shared across all players)
+local assetValueCache = {}
+local CACHE_DURATION = 3600 -- 1 hour cache for asset values
+local lastApiCall = 0
+local API_COOLDOWN = 1 -- Minimum 1 second between API calls
+
+function ProfileCollector.new(config)
+	local self = setmetatable({}, ProfileCollector)
+	self.config = config
+	return self
+end
+
+function ProfileCollector:init()
+	-- Profile data is collected on player join
+end
+
+function ProfileCollector:loadProfile(player)
+	task.spawn(function()
+		local profile = {
+			isPremium = player.MembershipType == Enum.MembershipType.Premium,
+			accountAgeDays = player.AccountAge,
+			locale = player.LocaleId or "en-us",
+			verifiedAgeBracket = "unknown",
+		}
+
+		-- Get groups
+		local groups = self:getGroups(player)
+		profile.groupCount = #groups
+		profile.highRankGroupCount = 0
+		for _, group in ipairs(groups) do
+			if group.Rank and group.Rank > 200 then
+				profile.highRankGroupCount += 1
+			end
+		end
+
+		-- Get friends count
+		profile.friendsCount = self:getFriendsCount(player)
+
+		-- Get avatar data (with real values from API)
+		local avatar = self:getAvatarData(player)
+		profile.avatarTotalValue = avatar.totalValue
+		profile.avatarLimitedCount = avatar.limitedCount
+		profile.avatarHighestItem = avatar.highestValue
+		profile.avatarAccessoryCount = avatar.accessoryCount
+
+		-- Party detection (basic - checks for friends in same server)
+		local partyInfo = self:detectParty(player)
+		profile.isInParty = partyInfo.isInParty
+		profile.partySize = partyInfo.partySize
+
+		playerProfiles[player.UserId] = profile
+	end)
+end
+
+function ProfileCollector:getGroups(player)
+	local success, groups = pcall(function()
+		return GroupService:GetGroupsAsync(player.UserId)
+	end)
+
+	if success then
+		return groups
+	end
+	return {}
+end
+
+function ProfileCollector:getFriendsCount(player)
+	local success, pages = pcall(function()
+		return Players:GetFriendsAsync(player.UserId)
+	end)
+
+	if not success then return 0 end
+
+	local count = 0
+	local maxPages = 5 -- Limit to avoid timeout
+	local pageNum = 0
+
+	while pageNum < maxPages do
+		local items = pages:GetCurrentPage()
+		count += #items
+
+		if pages.IsFinished then break end
+
+		local nextSuccess = pcall(function()
+			pages:AdvanceToNextPageAsync()
+		end)
+
+		if not nextSuccess then break end
+		pageNum += 1
+	end
+
+	return count
+end
+
+--[[
+	Get avatar data with real values from Roblox Catalog API
+	Uses batching and caching to minimize API calls
+]]
+function ProfileCollector:getAvatarData(player)
+	local result = {
+		totalValue = 0,
+		limitedCount = 0,
+		highestValue = 0,
+		accessoryCount = 0,
+	}
+
+	-- Get HumanoidDescription
+	local success, description = pcall(function()
+		return Players:GetHumanoidDescriptionFromUserId(player.UserId)
+	end)
+
+	if not success or not description then
+		return result
+	end
+
+	-- Collect all asset IDs from avatar
+	local assetIds = {}
+	local accessoryDescriptions = description:GetAccessories(false)
+	for _, acc in ipairs(accessoryDescriptions) do
+		if acc.AssetId and acc.AssetId > 0 then
+			table.insert(assetIds, acc.AssetId)
+		end
+	end
+
+	result.accessoryCount = #assetIds
+
+	if #assetIds == 0 then
+		return result
+	end
+
+	-- Check which assets need lookup (not in cache or expired)
+	local uncachedIds = {}
+	local now = tick()
+
+	for _, assetId in ipairs(assetIds) do
+		local cached = assetValueCache[assetId]
+		if not cached or (now - cached.timestamp) > CACHE_DURATION then
+			table.insert(uncachedIds, assetId)
+		end
+	end
+
+	-- Fetch uncached assets from API (batched)
+	if #uncachedIds > 0 then
+		self:fetchAssetValues(uncachedIds)
+	end
+
+	-- Calculate totals from cache
+	for _, assetId in ipairs(assetIds) do
+		local cached = assetValueCache[assetId]
+		if cached then
+			local value = cached.price or 0
+			result.totalValue += value
+
+			if cached.isLimited then
+				result.limitedCount += 1
+				-- For limiteds, use resale price if available
+				if cached.lowestResalePrice and cached.lowestResalePrice > value then
+					result.totalValue += (cached.lowestResalePrice - value)
+					value = cached.lowestResalePrice
+				end
+			end
+
+			if value > result.highestValue then
+				result.highestValue = value
+			end
+		end
+	end
+
+	return result
+end
+
+--[[
+	Fetch asset values from Roblox Catalog API
+	Batches up to 120 items per request
+]]
+function ProfileCollector:fetchAssetValues(assetIds)
+	-- Rate limit
+	local now = tick()
+	if (now - lastApiCall) < API_COOLDOWN then
+		task.wait(API_COOLDOWN - (now - lastApiCall))
+	end
+	lastApiCall = tick()
+
+	-- Batch into chunks of 120 (API limit)
+	local BATCH_SIZE = 120
+
+	for i = 1, #assetIds, BATCH_SIZE do
+		local batch = {}
+		for j = i, math.min(i + BATCH_SIZE - 1, #assetIds) do
+			table.insert(batch, {
+				itemType = "Asset",
+				id = assetIds[j],
+			})
+		end
+
+		local success, response = pcall(function()
+			return HttpService:RequestAsync({
+				Url = "https://catalog.roblox.com/v1/catalog/items/details",
+				Method = "POST",
+				Headers = {
+					["Content-Type"] = "application/json",
+				},
+				Body = HttpService:JSONEncode({ items = batch }),
+			})
+		end)
+
+		if success and response.StatusCode == 200 then
+			local decodeSuccess, data = pcall(function()
+				return HttpService:JSONDecode(response.Body)
+			end)
+
+			if decodeSuccess and data and data.data then
+				for _, item in ipairs(data.data) do
+					assetValueCache[item.id] = {
+						price = item.price or item.lowestPrice or 0,
+						isLimited = item.itemRestrictions and table.find(item.itemRestrictions, "Limited") ~= nil,
+						lowestResalePrice = item.lowestResalePrice,
+						timestamp = tick(),
+					}
+				end
+			end
+		else
+			-- API failed - cache zeros to avoid repeated failures
+			for _, entry in ipairs(batch) do
+				if not assetValueCache[entry.id] then
+					assetValueCache[entry.id] = {
+						price = 0,
+						isLimited = false,
+						timestamp = tick(),
+					}
+				end
+			end
+		end
+
+		-- Cooldown between batches
+		if i + BATCH_SIZE <= #assetIds then
+			task.wait(API_COOLDOWN)
+		end
+	end
+end
+
+--[[
+	Detect if player is in a party (friends in same server)
+]]
+function ProfileCollector:detectParty(player)
+	local result = {
+		isInParty = false,
+		partySize = 0,
+	}
+
+	-- Get player's friends
+	local friendIds = {}
+	local success, pages = pcall(function()
+		return Players:GetFriendsAsync(player.UserId)
+	end)
+
+	if not success then return result end
+
+	-- Collect friend IDs (first page only for speed)
+	local items = pages:GetCurrentPage()
+	for _, friend in ipairs(items) do
+		friendIds[friend.Id] = true
+	end
+
+	-- Check if any friends are in the same server
+	local friendsInServer = 0
+	for _, otherPlayer in ipairs(Players:GetPlayers()) do
+		if otherPlayer ~= player and friendIds[otherPlayer.UserId] then
+			friendsInServer += 1
+		end
+	end
+
+	if friendsInServer > 0 then
+		result.isInParty = true
+		result.partySize = friendsInServer + 1 -- Include the player
+	end
+
+	return result
+end
+
+function ProfileCollector:collect(player)
+	local profile = playerProfiles[player.UserId]
+
+	if profile then
+		return profile
+	else
+		return {
+			isPremium = player.MembershipType == Enum.MembershipType.Premium,
+			accountAgeDays = player.AccountAge,
+			locale = player.LocaleId or "en-us",
+			verifiedAgeBracket = "unknown",
+			groupCount = 0,
+			highRankGroupCount = 0,
+			friendsCount = 0,
+			avatarTotalValue = 0,
+			avatarLimitedCount = 0,
+			avatarHighestItem = 0,
+			avatarAccessoryCount = 0,
+			isInParty = false,
+			partySize = 0,
+		}
+	end
+end
+
+function ProfileCollector:clearPlayer(player)
+	playerProfiles[player.UserId] = nil
+end
+
+return ProfileCollector]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    <Item class="ModuleScript" referent="RBX000003EF">
+      <Properties>
+        <string name="Name">SessionCollector</string>
+        <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK - Session Collector
+	Tracks session-level data (time, offers, purchases)
+]]
+
+local HttpService = game:GetService("HttpService")
+
+local SessionCollector = {}
+SessionCollector.__index = SessionCollector
+
+local playerSessions = {}
+
+function SessionCollector.new(config)
+	local self = setmetatable({}, SessionCollector)
+	self.config = config
+	return self
+end
+
+function SessionCollector:init()
+	-- Sessions are started on player join
+end
+
+function SessionCollector:startSession(player, storedData)
+	local sessionId = HttpService:GenerateGUID(false)
+
+	local lastSession = storedData and storedData.lastSessionTime or 0
+	local daysSince = 0
+	if lastSession > 0 then
+		daysSince = math.floor((os.time() - lastSession) / 86400)
+	end
+
+	playerSessions[player.UserId] = {
+		sessionId = sessionId,
+		sessionNumber = storedData and (storedData.totalSessions or 0) + 1 or 1,
+		startTime = tick(),
+		isFirstSession = not storedData or storedData.totalSessions == 0,
+		daysSinceLastSession = daysSince,
+		offersShown = 0,
+		offersDismissed = 0,
+		purchasesMade = 0,
+		-- NEW: Track last offer timing and result
+		lastOfferTime = nil,
+		lastOfferResult = "none",
+		lastOfferPromptId = nil,
+	}
+end
+
+function SessionCollector:recordOfferShown(player, promptId)
+	local session = playerSessions[player.UserId]
+	if session then
+		session.offersShown += 1
+		session.lastOfferTime = tick()
+		session.lastOfferResult = "pending" -- Will be updated when result comes in
+		session.lastOfferPromptId = promptId
+	end
+end
+
+function SessionCollector:recordOfferDismissed(player)
+	local session = playerSessions[player.UserId]
+	if session then
+		session.offersDismissed += 1
+		session.lastOfferResult = "dismissed"
+	end
+end
+
+function SessionCollector:recordPurchase(player)
+	local session = playerSessions[player.UserId]
+	if session then
+		session.purchasesMade += 1
+		session.lastOfferResult = "purchased"
+	end
+end
+
+-- NEW: Record when offer is ignored (shown but no response within timeout)
+function SessionCollector:recordOfferIgnored(player)
+	local session = playerSessions[player.UserId]
+	if session then
+		session.lastOfferResult = "ignored"
+	end
+end
+
+function SessionCollector:collect(player)
+	local session = playerSessions[player.UserId]
+
+	if session then
+		-- Calculate seconds since last offer
+		local secondsSinceLastOffer = nil
+		if session.lastOfferTime then
+			secondsSinceLastOffer = math.floor(tick() - session.lastOfferTime)
+		end
+
+		-- Calculate dismiss rate this session
+		local dismissRate = 0
+		if session.offersShown > 0 then
+			dismissRate = session.offersDismissed / session.offersShown
+		end
+
+		return {
+			sessionId = session.sessionId,
+			sessionNumber = session.sessionNumber,
+			sessionDurationSec = math.floor(tick() - session.startTime),
+			isFirstSession = session.isFirstSession,
+			daysSinceLastSession = session.daysSinceLastSession,
+			offersShown = session.offersShown,
+			offersDismissed = session.offersDismissed,
+			purchasesMade = session.purchasesMade,
+			-- Offer timing context for AI learning
+			lastOfferResult = session.lastOfferResult,
+			lastOfferPromptId = session.lastOfferPromptId,
+			secondsSinceLastOffer = secondsSinceLastOffer,
+			dismissRateThisSession = dismissRate,
+		}
+	else
+		return {
+			sessionId = "unknown",
+			sessionNumber = 1,
+			sessionDurationSec = 0,
+			isFirstSession = true,
+			daysSinceLastSession = 0,
+			offersShown = 0,
+			offersDismissed = 0,
+			purchasesMade = 0,
+			lastOfferResult = "none",
+			lastOfferPromptId = nil,
+			secondsSinceLastOffer = nil,
+			dismissRateThisSession = 0,
+		}
+	end
+end
+
+function SessionCollector:getSessionTime(player)
+	local session = playerSessions[player.UserId]
+	if session then
+		return tick() - session.startTime
+	end
+	return 0
+end
+
+-- NEW: Get last offer info (for checking if offer is pending)
+function SessionCollector:getLastOfferInfo(player)
+	local session = playerSessions[player.UserId]
+	if session and session.lastOfferTime then
+		return {
+			time = session.lastOfferTime,
+			result = session.lastOfferResult,
+			promptId = session.lastOfferPromptId,
+			secondsAgo = math.floor(tick() - session.lastOfferTime),
+		}
+	end
+	return nil
+end
+
+function SessionCollector:clearPlayer(player)
+	playerSessions[player.UserId] = nil
+end
+
+return SessionCollector]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    <Item class="ModuleScript" referent="RBX000003F0">
+      <Properties>
+        <string name="Name">StateCollector</string>
+        <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK - State Collector
+	Simple key/value store for game state
+	Developer sets any values via SetState(player, key, value)
+]]
+
+local StateCollector = {}
+StateCollector.__index = StateCollector
+
+local playerStates = {}
+
+function StateCollector.new(config)
+	local self = setmetatable({}, StateCollector)
+	self.config = config
+	return self
+end
+
+function StateCollector:init()
+	-- States are set by developer code
+end
+
+function StateCollector:initPlayer(player)
+	playerStates[player.UserId] = {}
+end
+
+-- Set any state value
+function StateCollector:setState(player, key, value)
+	local state = playerStates[player.UserId]
+	if state then
+		state[key] = value
+	end
+end
+
+-- Get a state value
+function StateCollector:getState(player, key)
+	local state = playerStates[player.UserId]
+	return state and state[key]
+end
+
+-- Collect all state for API payload (flat key/value)
+function StateCollector:collect(player)
+	local state = playerStates[player.UserId]
+	if state then
+		-- Return a copy of the state table
+		local result = {}
+		for k, v in pairs(state) do
+			result[k] = v
+		end
+		return result
+	else
+		return {}
+	end
+end
+
+function StateCollector:clearPlayer(player)
+	playerStates[player.UserId] = nil
+end
+
+return StateCollector]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    <Item class="ModuleScript" referent="RBX000003F1">
+      <Properties>
+        <string name="Name">DeviceCollector</string>
+        <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK - Device Collector
+	Receives device info from client and stores it
+]]
+
+local RunService = game:GetService("RunService")
+
+local DeviceCollector = {}
+DeviceCollector.__index = DeviceCollector
+
+local playerDeviceData = {}
+
+function DeviceCollector.new(config)
+	local self = setmetatable({}, DeviceCollector)
+	self.config = config
+	return self
+end
+
+function DeviceCollector:init()
+	-- Skip remote setup in Studio edit mode
+	if not RunService:IsRunning() then
+		return
+	end
+	
+	-- Create RemoteEvent for client to send device data
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	
+	local remotesFolder = ReplicatedStorage:FindFirstChild("PLAY3Remotes")
+	if not remotesFolder then
+		remotesFolder = Instance.new("Folder")
+		remotesFolder.Name = "PLAY3Remotes"
+		remotesFolder.Parent = ReplicatedStorage
+	end
+	
+	local deviceEvent = remotesFolder:FindFirstChild("DeviceInfo")
+	if not deviceEvent then
+		deviceEvent = Instance.new("RemoteEvent")
+		deviceEvent.Name = "DeviceInfo"
+		deviceEvent.Parent = remotesFolder
+	end
+	
+	local success = pcall(function()
+		deviceEvent.OnServerEvent:Connect(function(player, data)
+			self:receiveDeviceData(player, data)
+		end)
+	end)
+	
+	if not success then
+		warn("[PLAY3] DeviceCollector: Could not connect OnServerEvent (expected in edit mode)")
+	end
+end
+
+function DeviceCollector:receiveDeviceData(player, data)
+	if not data or type(data) ~= "table" then return end
+	
+	playerDeviceData[player.UserId] = {
+		platform = data.platform or "unknown",
+		screenResX = data.screenResX or 0,
+		screenResY = data.screenResY or 0,
+		isMobile = data.isMobile or false,
+		isConsole = data.isConsole or false,
+		isVR = data.isVR or false,
+		receivedAt = tick(),
+	}
+end
+
+function DeviceCollector:collect(player)
+	local data = playerDeviceData[player.UserId]
+	
+	if data then
+		return {
+			platform = data.platform,
+			screenResX = data.screenResX,
+			screenResY = data.screenResY,
+			isMobile = data.isMobile,
+			isConsole = data.isConsole,
+			isVR = data.isVR,
+		}
+	else
+		return {
+			platform = "unknown",
+			screenResX = 0,
+			screenResY = 0,
+			isMobile = false,
+			isConsole = false,
+			isVR = false,
+		}
+	end
+end
+
+function DeviceCollector:clearPlayer(player)
+	playerDeviceData[player.UserId] = nil
+end
+
+return DeviceCollector]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    </Item>
+    <Item class="Folder" referent="RBX000003F7">
+      <Properties>
+        <string name="Name">Analytics</string>
+      </Properties>
+      
+    <Item class="Script" referent="RBX000003F5">
+      <Properties>
+        <string name="Name">PLAY3_Analytics</string>
+        <ProtectedString name="Source"><![CDATA[local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+
+-- Don't run in edit mode
+if not RunService:IsRunning() then
+	return {}
+end
+
+local HashLib = require(script.HashLib)
+local Config = require(script.Parent.Parent.Config)
+
+local SECONDS_INTERVAL = 60
+
+-- Toggle Studio testing (only applies when game is running in Studio)
+local ALLOW_STUDIO = true
+
+-- Pull endpoint/key from Config
+local SESSIONS_ENDPOINT = Config.API_URL .. "/game-events/sessions"
+local SESSIONS_API_KEY = Config.API_KEY
+
+local AnalyticsModule = {}
+local playerSessions = {}
+
+local function generateAnonId(player: Player)
+	return HashLib.sha256(tostring(player.UserId))
+end
+
+local function getIsoTimestampUTC()
+	return os.date("!%Y-%m-%dT%H:%M:%SZ")
+end
+
+Players.PlayerAdded:Connect(function(player)
+	playerSessions[player.UserId] = {
+		joinTime = os.time(),
+		playerId = generateAnonId(player),
+	}
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	playerSessions[player.UserId] = nil
+end)
+
+function AnalyticsModule:SendSessions()
+	-- Allow Studio if toggle is on
+	if RunService:IsStudio() and not ALLOW_STUDIO then
+		return
+	end
+
+	local sessionsArr = {}
+	for _, session in pairs(playerSessions) do
+		table.insert(sessionsArr, {
+			playerId = session.playerId,
+			playTime = os.time() - session.joinTime,
+		})
+	end
+
+	local payload = {
+		gameId = tostring(game.GameId),
+		timestamp = getIsoTimestampUTC(),
+		playersCount = #Players:GetPlayers(),
+		sessions = sessionsArr,
+	}
+
+	local ok, res = pcall(function()
+		return HttpService:RequestAsync({
+			Url = SESSIONS_ENDPOINT,
+			Method = "POST",
+			Headers = {
+				["content-type"] = "application/json",
+				["x-api-key"] = SESSIONS_API_KEY,
+			},
+			Body = HttpService:JSONEncode(payload),
+		})
+	end)
+
+	if not ok then
+		warn("[AnalyticsModule] HTTP error:", res)
+		return
+	end
+
+	if not res.Success then
+		warn("[AnalyticsModule] Failed:", res.StatusCode, res.Body)
+	end
+end
+
+task.spawn(function()
+	while true do
+		AnalyticsModule:SendSessions()
+		task.wait(SECONDS_INTERVAL)
+	end
+end)
+
+return AnalyticsModule]]></ProtectedString>
+      </Properties>
+      
+    <Item class="ModuleScript" referent="RBX000003F4">
+      <Properties>
+        <string name="Name">HashLib</string>
+        <ProtectedString name="Source"><![CDATA[--[=[------------------------------------------------------------------------------------------------------------------------
+-- HashLib by Egor Skriptunoff, boatbomber, and howmanysmall
+
+Documentation here: https://devforum.roblox.com/t/open-source-hashlib/416732/1
+
+--------------------------------------------------------------------------------------------------------------------------
+
+Module was originally written by Egor Skriptunoff and distributed under an MIT license.
+It can be found here: https://github.com/Egor-Skriptunoff/pure_lua_SHA/blob/master/sha2.lua
+
+That version was around 3000 lines long, and supported Lua versions 5.1, 5.2, 5.3, and 5.4, and LuaJIT.
+Although that is super cool, Roblox only uses Lua 5.1, so that was extreme overkill.
+
+I, boatbomber, worked to port it to Roblox in a way that doesn't overcomplicate it with support of unreachable
+cases. Then, howmanysmall did some final optimizations that really squeeze out all the performance possible.
+It's gotten stupid fast, thanks to her!
+
+After quite a bit of work and benchmarking, this is what we were left with.
+Enjoy!
+
+--------------------------------------------------------------------------------------------------------------------------
+
+DESCRIPTION:
+	This module contains functions to calculate SHA digest:
+		MD5, SHA-1,
+		SHA-224, SHA-256, SHA-512/224, SHA-512/256, SHA-384, SHA-512,
+		SHA3-224, SHA3-256, SHA3-384, SHA3-512, SHAKE128, SHAKE256,
+		HMAC
+	Additionally, it has a few extra utility functions:
+		hex_to_bin
+		base64_to_bin
+		bin_to_base64
+	Written in pure Lua.
+USAGE:
+	Input data should be a string
+	Result (SHA digest) is returned in hexadecimal representation as a string of lowercase hex digits.
+	Simplest usage example:
+		local HashLib = require(script.HashLib)
+		local your_hash = HashLib.sha256("your string")
+API:
+		HashLib.md5
+		HashLib.sha1
+	SHA2 hash functions:
+		HashLib.sha224
+		HashLib.sha256
+		HashLib.sha512_224
+		HashLib.sha512_256
+		HashLib.sha384
+		HashLib.sha512
+	SHA3 hash functions:
+		HashLib.sha3_224
+		HashLib.sha3_256
+		HashLib.sha3_384
+		HashLib.sha3_512
+		HashLib.shake128
+		HashLib.shake256
+	Misc utilities:
+		HashLib.hmac (Applicable to any hash function from this module except SHAKE*)
+		HashLib.hex_to_bin
+		HashLib.base64_to_bin
+		HashLib.bin_to_base64
+
+--]=]---------------------------------------------------------------------------
+
+local Base64 = require(script.Base64)
+
+--------------------------------------------------------------------------------
+-- LOCALIZATION FOR VM OPTIMIZATIONS
+--------------------------------------------------------------------------------
+
+local ipairs = ipairs
+
+--------------------------------------------------------------------------------
+-- 32-BIT BITWISE FUNCTIONS
+--------------------------------------------------------------------------------
+-- Only low 32 bits of function arguments matter, high bits are ignored
+-- The result of all functions (except HEX) is an integer inside "correct range":
+-- for "bit" library:    (-TWO_POW_31)..(TWO_POW_31-1)
+-- for "bit32" library:        0..(TWO_POW_32-1)
+local bit32_band = bit32.band -- 2 arguments
+local bit32_bor = bit32.bor -- 2 arguments
+local bit32_bxor = bit32.bxor -- 2..5 arguments
+local bit32_lshift = bit32.lshift -- second argument is integer 0..31
+local bit32_rshift = bit32.rshift -- second argument is integer 0..31
+local bit32_lrotate = bit32.lrotate -- second argument is integer 0..31
+local bit32_rrotate = bit32.rrotate -- second argument is integer 0..31
+
+--------------------------------------------------------------------------------
+-- CREATING OPTIMIZED INNER LOOP
+--------------------------------------------------------------------------------
+-- Arrays of SHA2 "magic numbers" (in "INT64" and "FFI" branches "*_lo" arrays contain 64-bit values)
+local sha2_K_lo, sha2_K_hi, sha2_H_lo, sha2_H_hi, sha3_RC_lo, sha3_RC_hi = {}, {}, {}, {}, {}, {}
+local sha2_H_ext256 = {
+	[224] = {};
+	[256] = sha2_H_hi;
+}
+
+local sha2_H_ext512_lo, sha2_H_ext512_hi = {
+	[384] = {};
+	[512] = sha2_H_lo;
+}, {
+	[384] = {};
+	[512] = sha2_H_hi;
+}
+
+local md5_K, md5_sha1_H = {}, {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0}
+local md5_next_shift = {0, 0, 0, 0, 0, 0, 0, 0, 28, 25, 26, 27, 0, 0, 10, 9, 11, 12, 0, 15, 16, 17, 18, 0, 20, 22, 23, 21}
+local HEX64, XOR64A5, lanes_index_base -- defined only for branches that internally use 64-bit integers: "INT64" and "FFI"
+local common_W = {} -- temporary table shared between all calculations (to avoid creating new temporary table every time)
+local K_lo_modulo, hi_factor, hi_factor_keccak = 4294967296, 0, 0
+
+local TWO_POW_NEG_56 = 2 ^ -56
+local TWO_POW_NEG_17 = 2 ^ -17
+
+local TWO_POW_2 = 2 ^ 2
+local TWO_POW_3 = 2 ^ 3
+local TWO_POW_4 = 2 ^ 4
+local TWO_POW_5 = 2 ^ 5
+local TWO_POW_6 = 2 ^ 6
+local TWO_POW_7 = 2 ^ 7
+local TWO_POW_8 = 2 ^ 8
+local TWO_POW_9 = 2 ^ 9
+local TWO_POW_10 = 2 ^ 10
+local TWO_POW_11 = 2 ^ 11
+local TWO_POW_12 = 2 ^ 12
+local TWO_POW_13 = 2 ^ 13
+local TWO_POW_14 = 2 ^ 14
+local TWO_POW_15 = 2 ^ 15
+local TWO_POW_16 = 2 ^ 16
+local TWO_POW_17 = 2 ^ 17
+local TWO_POW_18 = 2 ^ 18
+local TWO_POW_19 = 2 ^ 19
+local TWO_POW_20 = 2 ^ 20
+local TWO_POW_21 = 2 ^ 21
+local TWO_POW_22 = 2 ^ 22
+local TWO_POW_23 = 2 ^ 23
+local TWO_POW_24 = 2 ^ 24
+local TWO_POW_25 = 2 ^ 25
+local TWO_POW_26 = 2 ^ 26
+local TWO_POW_27 = 2 ^ 27
+local TWO_POW_28 = 2 ^ 28
+local TWO_POW_29 = 2 ^ 29
+local TWO_POW_30 = 2 ^ 30
+local TWO_POW_31 = 2 ^ 31
+local TWO_POW_32 = 2 ^ 32
+local TWO_POW_40 = 2 ^ 40
+
+local TWO56_POW_7 = 256 ^ 7
+
+-- Implementation for Lua 5.1/5.2 (with or without bitwise library available)
+local function sha256_feed_64(H, str, offs, size)
+	-- offs >= 0, size >= 0, size is multiple of 64
+	local W, K = common_W, sha2_K_hi
+	local h1, h2, h3, h4, h5, h6, h7, h8 = H[1], H[2], H[3], H[4], H[5], H[6], H[7], H[8]
+	for pos = offs, offs + size - 1, 64 do
+		for j = 1, 16 do
+			pos = pos + 4
+			local a, b, c, d = string.byte(str, pos - 3, pos)
+			W[j] = ((a * 256 + b) * 256 + c) * 256 + d
+		end
+
+		for j = 17, 64 do
+			local a, b = W[j - 15], W[j - 2]
+			W[j] = bit32_bxor(bit32_rrotate(a, 7), bit32_lrotate(a, 14), bit32_rshift(a, 3)) + bit32_bxor(bit32_lrotate(b, 15), bit32_lrotate(b, 13), bit32_rshift(b, 10)) + W[j - 7] + W[j - 16]
+		end
+
+		local a, b, c, d, e, f, g, h = h1, h2, h3, h4, h5, h6, h7, h8
+		for j = 1, 64 do
+			local z = bit32_bxor(bit32_rrotate(e, 6), bit32_rrotate(e, 11), bit32_lrotate(e, 7)) + bit32_band(e, f) + bit32_band(-1 - e, g) + h + K[j] + W[j]
+			h = g
+			g = f
+			f = e
+			e = z + d
+			d = c
+			c = b
+			b = a
+			a = z + bit32_band(d, c) + bit32_band(a, bit32_bxor(d, c)) + bit32_bxor(bit32_rrotate(a, 2), bit32_rrotate(a, 13), bit32_lrotate(a, 10))
+		end
+
+		h1, h2, h3, h4 = (a + h1) % 4294967296, (b + h2) % 4294967296, (c + h3) % 4294967296, (d + h4) % 4294967296
+		h5, h6, h7, h8 = (e + h5) % 4294967296, (f + h6) % 4294967296, (g + h7) % 4294967296, (h + h8) % 4294967296
+	end
+
+	H[1], H[2], H[3], H[4], H[5], H[6], H[7], H[8] = h1, h2, h3, h4, h5, h6, h7, h8
+end
+
+local function sha512_feed_128(H_lo, H_hi, str, offs, size)
+	-- offs >= 0, size >= 0, size is multiple of 128
+	-- W1_hi, W1_lo, W2_hi, W2_lo, ...   Wk_hi = W[2*k-1], Wk_lo = W[2*k]
+	local W, K_lo, K_hi = common_W, sha2_K_lo, sha2_K_hi
+	local h1_lo, h2_lo, h3_lo, h4_lo, h5_lo, h6_lo, h7_lo, h8_lo = H_lo[1], H_lo[2], H_lo[3], H_lo[4], H_lo[5], H_lo[6], H_lo[7], H_lo[8]
+	local h1_hi, h2_hi, h3_hi, h4_hi, h5_hi, h6_hi, h7_hi, h8_hi = H_hi[1], H_hi[2], H_hi[3], H_hi[4], H_hi[5], H_hi[6], H_hi[7], H_hi[8]
+	for pos = offs, offs + size - 1, 128 do
+		for j = 1, 16 * 2 do
+			pos = pos + 4
+			local a, b, c, d = string.byte(str, pos - 3, pos)
+			W[j] = ((a * 256 + b) * 256 + c) * 256 + d
+		end
+
+		for jj = 34, 160, 2 do
+			local a_lo, a_hi, b_lo, b_hi = W[jj - 30], W[jj - 31], W[jj - 4], W[jj - 5]
+			local tmp1 = bit32_bxor(bit32_rshift(a_lo, 1) + bit32_lshift(a_hi, 31), bit32_rshift(a_lo, 8) + bit32_lshift(a_hi, 24), bit32_rshift(a_lo, 7) + bit32_lshift(a_hi, 25)) % 4294967296 +
+				bit32_bxor(bit32_rshift(b_lo, 19) + bit32_lshift(b_hi, 13), bit32_lshift(b_lo, 3) + bit32_rshift(b_hi, 29), bit32_rshift(b_lo, 6) + bit32_lshift(b_hi, 26)) % 4294967296 +
+				W[jj - 14] + W[jj - 32]
+
+			local tmp2 = tmp1 % 4294967296
+			W[jj - 1] = bit32_bxor(bit32_rshift(a_hi, 1) + bit32_lshift(a_lo, 31), bit32_rshift(a_hi, 8) + bit32_lshift(a_lo, 24), bit32_rshift(a_hi, 7)) +
+				bit32_bxor(bit32_rshift(b_hi, 19) + bit32_lshift(b_lo, 13), bit32_lshift(b_hi, 3) + bit32_rshift(b_lo, 29), bit32_rshift(b_hi, 6)) +
+				W[jj - 15] + W[jj - 33] + (tmp1 - tmp2) / 4294967296
+
+			W[jj] = tmp2
+		end
+
+		local a_lo, b_lo, c_lo, d_lo, e_lo, f_lo, g_lo, h_lo = h1_lo, h2_lo, h3_lo, h4_lo, h5_lo, h6_lo, h7_lo, h8_lo
+		local a_hi, b_hi, c_hi, d_hi, e_hi, f_hi, g_hi, h_hi = h1_hi, h2_hi, h3_hi, h4_hi, h5_hi, h6_hi, h7_hi, h8_hi
+		for j = 1, 80 do
+			local jj = 2 * j
+			local tmp1 = bit32_bxor(bit32_rshift(e_lo, 14) + bit32_lshift(e_hi, 18), bit32_rshift(e_lo, 18) + bit32_lshift(e_hi, 14), bit32_lshift(e_lo, 23) + bit32_rshift(e_hi, 9)) % 4294967296 +
+				(bit32_band(e_lo, f_lo) + bit32_band(-1 - e_lo, g_lo)) % 4294967296 +
+				h_lo + K_lo[j] + W[jj]
+
+			local z_lo = tmp1 % 4294967296
+			local z_hi = bit32_bxor(bit32_rshift(e_hi, 14) + bit32_lshift(e_lo, 18), bit32_rshift(e_hi, 18) + bit32_lshift(e_lo, 14), bit32_lshift(e_hi, 23) + bit32_rshift(e_lo, 9)) +
+				bit32_band(e_hi, f_hi) + bit32_band(-1 - e_hi, g_hi) +
+				h_hi + K_hi[j] + W[jj - 1] +
+				(tmp1 - z_lo) / 4294967296
+
+			h_lo = g_lo
+			h_hi = g_hi
+			g_lo = f_lo
+			g_hi = f_hi
+			f_lo = e_lo
+			f_hi = e_hi
+			tmp1 = z_lo + d_lo
+			e_lo = tmp1 % 4294967296
+			e_hi = z_hi + d_hi + (tmp1 - e_lo) / 4294967296
+			d_lo = c_lo
+			d_hi = c_hi
+			c_lo = b_lo
+			c_hi = b_hi
+			b_lo = a_lo
+			b_hi = a_hi
+			tmp1 = z_lo + (bit32_band(d_lo, c_lo) + bit32_band(b_lo, bit32_bxor(d_lo, c_lo))) % 4294967296 + bit32_bxor(bit32_rshift(b_lo, 28) + bit32_lshift(b_hi, 4), bit32_lshift(b_lo, 30) + bit32_rshift(b_hi, 2), bit32_lshift(b_lo, 25) + bit32_rshift(b_hi, 7)) % 4294967296
+			a_lo = tmp1 % 4294967296
+			a_hi = z_hi + (bit32_band(d_hi, c_hi) + bit32_band(b_hi, bit32_bxor(d_hi, c_hi))) + bit32_bxor(bit32_rshift(b_hi, 28) + bit32_lshift(b_lo, 4), bit32_lshift(b_hi, 30) + bit32_rshift(b_lo, 2), bit32_lshift(b_hi, 25) + bit32_rshift(b_lo, 7)) + (tmp1 - a_lo) / 4294967296
+		end
+
+		a_lo = h1_lo + a_lo
+		h1_lo = a_lo % 4294967296
+		h1_hi = (h1_hi + a_hi + (a_lo - h1_lo) / 4294967296) % 4294967296
+		a_lo = h2_lo + b_lo
+		h2_lo = a_lo % 4294967296
+		h2_hi = (h2_hi + b_hi + (a_lo - h2_lo) / 4294967296) % 4294967296
+		a_lo = h3_lo + c_lo
+		h3_lo = a_lo % 4294967296
+		h3_hi = (h3_hi + c_hi + (a_lo - h3_lo) / 4294967296) % 4294967296
+		a_lo = h4_lo + d_lo
+		h4_lo = a_lo % 4294967296
+		h4_hi = (h4_hi + d_hi + (a_lo - h4_lo) / 4294967296) % 4294967296
+		a_lo = h5_lo + e_lo
+		h5_lo = a_lo % 4294967296
+		h5_hi = (h5_hi + e_hi + (a_lo - h5_lo) / 4294967296) % 4294967296
+		a_lo = h6_lo + f_lo
+		h6_lo = a_lo % 4294967296
+		h6_hi = (h6_hi + f_hi + (a_lo - h6_lo) / 4294967296) % 4294967296
+		a_lo = h7_lo + g_lo
+		h7_lo = a_lo % 4294967296
+		h7_hi = (h7_hi + g_hi + (a_lo - h7_lo) / 4294967296) % 4294967296
+		a_lo = h8_lo + h_lo
+		h8_lo = a_lo % 4294967296
+		h8_hi = (h8_hi + h_hi + (a_lo - h8_lo) / 4294967296) % 4294967296
+	end
+
+	H_lo[1], H_lo[2], H_lo[3], H_lo[4], H_lo[5], H_lo[6], H_lo[7], H_lo[8] = h1_lo, h2_lo, h3_lo, h4_lo, h5_lo, h6_lo, h7_lo, h8_lo
+	H_hi[1], H_hi[2], H_hi[3], H_hi[4], H_hi[5], H_hi[6], H_hi[7], H_hi[8] = h1_hi, h2_hi, h3_hi, h4_hi, h5_hi, h6_hi, h7_hi, h8_hi
+end
+
+local function md5_feed_64(H, str, offs, size)
+	-- offs >= 0, size >= 0, size is multiple of 64
+	local W, K, md5_next_shift = common_W, md5_K, md5_next_shift
+	local h1, h2, h3, h4 = H[1], H[2], H[3], H[4]
+	for pos = offs, offs + size - 1, 64 do
+		for j = 1, 16 do
+			pos = pos + 4
+			local a, b, c, d = string.byte(str, pos - 3, pos)
+			W[j] = ((d * 256 + c) * 256 + b) * 256 + a
+		end
+
+		local a, b, c, d = h1, h2, h3, h4
+		local s = 25
+		for j = 1, 16 do
+			local F = bit32_rrotate(bit32_band(b, c) + bit32_band(-1 - b, d) + a + K[j] + W[j], s) + b
+			s = md5_next_shift[s]
+			a = d
+			d = c
+			c = b
+			b = F
+		end
+
+		s = 27
+		for j = 17, 32 do
+			local F = bit32_rrotate(bit32_band(d, b) + bit32_band(-1 - d, c) + a + K[j] + W[(5 * j - 4) % 16 + 1], s) + b
+			s = md5_next_shift[s]
+			a = d
+			d = c
+			c = b
+			b = F
+		end
+
+		s = 28
+		for j = 33, 48 do
+			local F = bit32_rrotate(bit32_bxor(bit32_bxor(b, c), d) + a + K[j] + W[(3 * j + 2) % 16 + 1], s) + b
+			s = md5_next_shift[s]
+			a = d
+			d = c
+			c = b
+			b = F
+		end
+
+		s = 26
+		for j = 49, 64 do
+			local F = bit32_rrotate(bit32_bxor(c, bit32_bor(b, -1 - d)) + a + K[j] + W[(j * 7 - 7) % 16 + 1], s) + b
+			s = md5_next_shift[s]
+			a = d
+			d = c
+			c = b
+			b = F
+		end
+
+		h1 = (a + h1) % 4294967296
+		h2 = (b + h2) % 4294967296
+		h3 = (c + h3) % 4294967296
+		h4 = (d + h4) % 4294967296
+	end
+
+	H[1], H[2], H[3], H[4] = h1, h2, h3, h4
+end
+
+local function sha1_feed_64(H, str, offs, size)
+	-- offs >= 0, size >= 0, size is multiple of 64
+	local W = common_W
+	local h1, h2, h3, h4, h5 = H[1], H[2], H[3], H[4], H[5]
+	for pos = offs, offs + size - 1, 64 do
+		for j = 1, 16 do
+			pos = pos + 4
+			local a, b, c, d = string.byte(str, pos - 3, pos)
+			W[j] = ((a * 256 + b) * 256 + c) * 256 + d
+		end
+
+		for j = 17, 80 do
+			W[j] = bit32_lrotate(bit32_bxor(W[j - 3], W[j - 8], W[j - 14], W[j - 16]), 1)
+		end
+
+		local a, b, c, d, e = h1, h2, h3, h4, h5
+		for j = 1, 20 do
+			local z = bit32_lrotate(a, 5) + bit32_band(b, c) + bit32_band(-1 - b, d) + 0x5A827999 + W[j] + e -- constant = math.floor(TWO_POW_30 * sqrt(2))
+			e = d
+			d = c
+			c = bit32_rrotate(b, 2)
+			b = a
+			a = z
+		end
+
+		for j = 21, 40 do
+			local z = bit32_lrotate(a, 5) + bit32_bxor(b, c, d) + 0x6ED9EBA1 + W[j] + e -- TWO_POW_30 * sqrt(3)
+			e = d
+			d = c
+			c = bit32_rrotate(b, 2)
+			b = a
+			a = z
+		end
+
+		for j = 41, 60 do
+			local z = bit32_lrotate(a, 5) + bit32_band(d, c) + bit32_band(b, bit32_bxor(d, c)) + 0x8F1BBCDC + W[j] + e -- TWO_POW_30 * sqrt(5)
+			e = d
+			d = c
+			c = bit32_rrotate(b, 2)
+			b = a
+			a = z
+		end
+
+		for j = 61, 80 do
+			local z = bit32_lrotate(a, 5) + bit32_bxor(b, c, d) + 0xCA62C1D6 + W[j] + e -- TWO_POW_30 * sqrt(10)
+			e = d
+			d = c
+			c = bit32_rrotate(b, 2)
+			b = a
+			a = z
+		end
+
+		h1 = (a + h1) % 4294967296
+		h2 = (b + h2) % 4294967296
+		h3 = (c + h3) % 4294967296
+		h4 = (d + h4) % 4294967296
+		h5 = (e + h5) % 4294967296
+	end
+
+	H[1], H[2], H[3], H[4], H[5] = h1, h2, h3, h4, h5
+end
+
+local function keccak_feed(lanes_lo, lanes_hi, str, offs, size, block_size_in_bytes)
+	-- This is an example of a Lua function having 79 local variables :-)
+	-- offs >= 0, size >= 0, size is multiple of block_size_in_bytes, block_size_in_bytes is positive multiple of 8
+	local RC_lo, RC_hi = sha3_RC_lo, sha3_RC_hi
+	local qwords_qty = block_size_in_bytes / 8
+	for pos = offs, offs + size - 1, block_size_in_bytes do
+		for j = 1, qwords_qty do
+			local a, b, c, d = string.byte(str, pos + 1, pos + 4)
+			lanes_lo[j] = bit32_bxor(lanes_lo[j], ((d * 256 + c) * 256 + b) * 256 + a)
+			pos = pos + 8
+			a, b, c, d = string.byte(str, pos - 3, pos)
+			lanes_hi[j] = bit32_bxor(lanes_hi[j], ((d * 256 + c) * 256 + b) * 256 + a)
+		end
+
+		local L01_lo, L01_hi, L02_lo, L02_hi, L03_lo, L03_hi, L04_lo, L04_hi, L05_lo, L05_hi, L06_lo, L06_hi, L07_lo, L07_hi, L08_lo, L08_hi, L09_lo, L09_hi, L10_lo, L10_hi, L11_lo, L11_hi, L12_lo, L12_hi, L13_lo, L13_hi, L14_lo, L14_hi, L15_lo, L15_hi, L16_lo, L16_hi, L17_lo, L17_hi, L18_lo, L18_hi, L19_lo, L19_hi, L20_lo, L20_hi, L21_lo, L21_hi, L22_lo, L22_hi, L23_lo, L23_hi, L24_lo, L24_hi, L25_lo, L25_hi = lanes_lo[1], lanes_hi[1], lanes_lo[2], lanes_hi[2], lanes_lo[3], lanes_hi[3], lanes_lo[4], lanes_hi[4], lanes_lo[5], lanes_hi[5], lanes_lo[6], lanes_hi[6], lanes_lo[7], lanes_hi[7], lanes_lo[8], lanes_hi[8], lanes_lo[9], lanes_hi[9], lanes_lo[10], lanes_hi[10], lanes_lo[11], lanes_hi[11], lanes_lo[12], lanes_hi[12], lanes_lo[13], lanes_hi[13], lanes_lo[14], lanes_hi[14], lanes_lo[15], lanes_hi[15], lanes_lo[16], lanes_hi[16], lanes_lo[17], lanes_hi[17], lanes_lo[18], lanes_hi[18], lanes_lo[19], lanes_hi[19], lanes_lo[20], lanes_hi[20], lanes_lo[21], lanes_hi[21], lanes_lo[22], lanes_hi[22], lanes_lo[23], lanes_hi[23], lanes_lo[24], lanes_hi[24], lanes_lo[25], lanes_hi[25]
+
+		for round_idx = 1, 24 do
+			local C1_lo = bit32_bxor(L01_lo, L06_lo, L11_lo, L16_lo, L21_lo)
+			local C1_hi = bit32_bxor(L01_hi, L06_hi, L11_hi, L16_hi, L21_hi)
+			local C2_lo = bit32_bxor(L02_lo, L07_lo, L12_lo, L17_lo, L22_lo)
+			local C2_hi = bit32_bxor(L02_hi, L07_hi, L12_hi, L17_hi, L22_hi)
+			local C3_lo = bit32_bxor(L03_lo, L08_lo, L13_lo, L18_lo, L23_lo)
+			local C3_hi = bit32_bxor(L03_hi, L08_hi, L13_hi, L18_hi, L23_hi)
+			local C4_lo = bit32_bxor(L04_lo, L09_lo, L14_lo, L19_lo, L24_lo)
+			local C4_hi = bit32_bxor(L04_hi, L09_hi, L14_hi, L19_hi, L24_hi)
+			local C5_lo = bit32_bxor(L05_lo, L10_lo, L15_lo, L20_lo, L25_lo)
+			local C5_hi = bit32_bxor(L05_hi, L10_hi, L15_hi, L20_hi, L25_hi)
+
+			local D_lo = bit32_bxor(C1_lo, C3_lo * 2 + (C3_hi % TWO_POW_32 - C3_hi % TWO_POW_31) / TWO_POW_31)
+			local D_hi = bit32_bxor(C1_hi, C3_hi * 2 + (C3_lo % TWO_POW_32 - C3_lo % TWO_POW_31) / TWO_POW_31)
+
+			local T0_lo = bit32_bxor(D_lo, L02_lo)
+			local T0_hi = bit32_bxor(D_hi, L02_hi)
+			local T1_lo = bit32_bxor(D_lo, L07_lo)
+			local T1_hi = bit32_bxor(D_hi, L07_hi)
+			local T2_lo = bit32_bxor(D_lo, L12_lo)
+			local T2_hi = bit32_bxor(D_hi, L12_hi)
+			local T3_lo = bit32_bxor(D_lo, L17_lo)
+			local T3_hi = bit32_bxor(D_hi, L17_hi)
+			local T4_lo = bit32_bxor(D_lo, L22_lo)
+			local T4_hi = bit32_bxor(D_hi, L22_hi)
+
+			L02_lo = (T1_lo % TWO_POW_32 - T1_lo % TWO_POW_20) / TWO_POW_20 + T1_hi * TWO_POW_12
+			L02_hi = (T1_hi % TWO_POW_32 - T1_hi % TWO_POW_20) / TWO_POW_20 + T1_lo * TWO_POW_12
+			L07_lo = (T3_lo % TWO_POW_32 - T3_lo % TWO_POW_19) / TWO_POW_19 + T3_hi * TWO_POW_13
+			L07_hi = (T3_hi % TWO_POW_32 - T3_hi % TWO_POW_19) / TWO_POW_19 + T3_lo * TWO_POW_13
+			L12_lo = T0_lo * 2 + (T0_hi % TWO_POW_32 - T0_hi % TWO_POW_31) / TWO_POW_31
+			L12_hi = T0_hi * 2 + (T0_lo % TWO_POW_32 - T0_lo % TWO_POW_31) / TWO_POW_31
+			L17_lo = T2_lo * TWO_POW_10 + (T2_hi % TWO_POW_32 - T2_hi % TWO_POW_22) / TWO_POW_22
+			L17_hi = T2_hi * TWO_POW_10 + (T2_lo % TWO_POW_32 - T2_lo % TWO_POW_22) / TWO_POW_22
+			L22_lo = T4_lo * TWO_POW_2 + (T4_hi % TWO_POW_32 - T4_hi % TWO_POW_30) / TWO_POW_30
+			L22_hi = T4_hi * TWO_POW_2 + (T4_lo % TWO_POW_32 - T4_lo % TWO_POW_30) / TWO_POW_30
+
+			D_lo = bit32_bxor(C2_lo, C4_lo * 2 + (C4_hi % TWO_POW_32 - C4_hi % TWO_POW_31) / TWO_POW_31)
+			D_hi = bit32_bxor(C2_hi, C4_hi * 2 + (C4_lo % TWO_POW_32 - C4_lo % TWO_POW_31) / TWO_POW_31)
+
+			T0_lo = bit32_bxor(D_lo, L03_lo)
+			T0_hi = bit32_bxor(D_hi, L03_hi)
+			T1_lo = bit32_bxor(D_lo, L08_lo)
+			T1_hi = bit32_bxor(D_hi, L08_hi)
+			T2_lo = bit32_bxor(D_lo, L13_lo)
+			T2_hi = bit32_bxor(D_hi, L13_hi)
+			T3_lo = bit32_bxor(D_lo, L18_lo)
+			T3_hi = bit32_bxor(D_hi, L18_hi)
+			T4_lo = bit32_bxor(D_lo, L23_lo)
+			T4_hi = bit32_bxor(D_hi, L23_hi)
+
+			L03_lo = (T2_lo % TWO_POW_32 - T2_lo % TWO_POW_21) / TWO_POW_21 + T2_hi * TWO_POW_11
+			L03_hi = (T2_hi % TWO_POW_32 - T2_hi % TWO_POW_21) / TWO_POW_21 + T2_lo * TWO_POW_11
+			L08_lo = (T4_lo % TWO_POW_32 - T4_lo % TWO_POW_3) / TWO_POW_3 + T4_hi * TWO_POW_29 % TWO_POW_32
+			L08_hi = (T4_hi % TWO_POW_32 - T4_hi % TWO_POW_3) / TWO_POW_3 + T4_lo * TWO_POW_29 % TWO_POW_32
+			L13_lo = T1_lo * TWO_POW_6 + (T1_hi % TWO_POW_32 - T1_hi % TWO_POW_26) / TWO_POW_26
+			L13_hi = T1_hi * TWO_POW_6 + (T1_lo % TWO_POW_32 - T1_lo % TWO_POW_26) / TWO_POW_26
+			L18_lo = T3_lo * TWO_POW_15 + (T3_hi % TWO_POW_32 - T3_hi % TWO_POW_17) / TWO_POW_17
+			L18_hi = T3_hi * TWO_POW_15 + (T3_lo % TWO_POW_32 - T3_lo % TWO_POW_17) / TWO_POW_17
+			L23_lo = (T0_lo % TWO_POW_32 - T0_lo % TWO_POW_2) / TWO_POW_2 + T0_hi * TWO_POW_30 % TWO_POW_32
+			L23_hi = (T0_hi % TWO_POW_32 - T0_hi % TWO_POW_2) / TWO_POW_2 + T0_lo * TWO_POW_30 % TWO_POW_32
+
+			D_lo = bit32_bxor(C3_lo, C5_lo * 2 + (C5_hi % TWO_POW_32 - C5_hi % TWO_POW_31) / TWO_POW_31)
+			D_hi = bit32_bxor(C3_hi, C5_hi * 2 + (C5_lo % TWO_POW_32 - C5_lo % TWO_POW_31) / TWO_POW_31)
+
+			T0_lo = bit32_bxor(D_lo, L04_lo)
+			T0_hi = bit32_bxor(D_hi, L04_hi)
+			T1_lo = bit32_bxor(D_lo, L09_lo)
+			T1_hi = bit32_bxor(D_hi, L09_hi)
+			T2_lo = bit32_bxor(D_lo, L14_lo)
+			T2_hi = bit32_bxor(D_hi, L14_hi)
+			T3_lo = bit32_bxor(D_lo, L19_lo)
+			T3_hi = bit32_bxor(D_hi, L19_hi)
+			T4_lo = bit32_bxor(D_lo, L24_lo)
+			T4_hi = bit32_bxor(D_hi, L24_hi)
+
+			L04_lo = T3_lo * TWO_POW_21 % TWO_POW_32 + (T3_hi % TWO_POW_32 - T3_hi % TWO_POW_11) / TWO_POW_11
+			L04_hi = T3_hi * TWO_POW_21 % TWO_POW_32 + (T3_lo % TWO_POW_32 - T3_lo % TWO_POW_11) / TWO_POW_11
+			L09_lo = T0_lo * TWO_POW_28 % TWO_POW_32 + (T0_hi % TWO_POW_32 - T0_hi % TWO_POW_4) / TWO_POW_4
+			L09_hi = T0_hi * TWO_POW_28 % TWO_POW_32 + (T0_lo % TWO_POW_32 - T0_lo % TWO_POW_4) / TWO_POW_4
+			L14_lo = T2_lo * TWO_POW_25 % TWO_POW_32 + (T2_hi % TWO_POW_32 - T2_hi % TWO_POW_7) / TWO_POW_7
+			L14_hi = T2_hi * TWO_POW_25 % TWO_POW_32 + (T2_lo % TWO_POW_32 - T2_lo % TWO_POW_7) / TWO_POW_7
+			L19_lo = (T4_lo % TWO_POW_32 - T4_lo % TWO_POW_8) / TWO_POW_8 + T4_hi * TWO_POW_24 % TWO_POW_32
+			L19_hi = (T4_hi % TWO_POW_32 - T4_hi % TWO_POW_8) / TWO_POW_8 + T4_lo * TWO_POW_24 % TWO_POW_32
+			L24_lo = (T1_lo % TWO_POW_32 - T1_lo % TWO_POW_9) / TWO_POW_9 + T1_hi * TWO_POW_23 % TWO_POW_32
+			L24_hi = (T1_hi % TWO_POW_32 - T1_hi % TWO_POW_9) / TWO_POW_9 + T1_lo * TWO_POW_23 % TWO_POW_32
+
+			D_lo = bit32_bxor(C4_lo, C1_lo * 2 + (C1_hi % TWO_POW_32 - C1_hi % TWO_POW_31) / TWO_POW_31)
+			D_hi = bit32_bxor(C4_hi, C1_hi * 2 + (C1_lo % TWO_POW_32 - C1_lo % TWO_POW_31) / TWO_POW_31)
+
+			T0_lo = bit32_bxor(D_lo, L05_lo)
+			T0_hi = bit32_bxor(D_hi, L05_hi)
+			T1_lo = bit32_bxor(D_lo, L10_lo)
+			T1_hi = bit32_bxor(D_hi, L10_hi)
+			T2_lo = bit32_bxor(D_lo, L15_lo)
+			T2_hi = bit32_bxor(D_hi, L15_hi)
+			T3_lo = bit32_bxor(D_lo, L20_lo)
+			T3_hi = bit32_bxor(D_hi, L20_hi)
+			T4_lo = bit32_bxor(D_lo, L25_lo)
+			T4_hi = bit32_bxor(D_hi, L25_hi)
+
+			L05_lo = T4_lo * TWO_POW_14 + (T4_hi % TWO_POW_32 - T4_hi % TWO_POW_18) / TWO_POW_18
+			L05_hi = T4_hi * TWO_POW_14 + (T4_lo % TWO_POW_32 - T4_lo % TWO_POW_18) / TWO_POW_18
+			L10_lo = T1_lo * TWO_POW_20 % TWO_POW_32 + (T1_hi % TWO_POW_32 - T1_hi % TWO_POW_12) / TWO_POW_12
+			L10_hi = T1_hi * TWO_POW_20 % TWO_POW_32 + (T1_lo % TWO_POW_32 - T1_lo % TWO_POW_12) / TWO_POW_12
+			L15_lo = T3_lo * TWO_POW_8 + (T3_hi % TWO_POW_32 - T3_hi % TWO_POW_24) / TWO_POW_24
+			L15_hi = T3_hi * TWO_POW_8 + (T3_lo % TWO_POW_32 - T3_lo % TWO_POW_24) / TWO_POW_24
+			L20_lo = T0_lo * TWO_POW_27 % TWO_POW_32 + (T0_hi % TWO_POW_32 - T0_hi % TWO_POW_5) / TWO_POW_5
+			L20_hi = T0_hi * TWO_POW_27 % TWO_POW_32 + (T0_lo % TWO_POW_32 - T0_lo % TWO_POW_5) / TWO_POW_5
+			L25_lo = (T2_lo % TWO_POW_32 - T2_lo % TWO_POW_25) / TWO_POW_25 + T2_hi * TWO_POW_7
+			L25_hi = (T2_hi % TWO_POW_32 - T2_hi % TWO_POW_25) / TWO_POW_25 + T2_lo * TWO_POW_7
+
+			D_lo = bit32_bxor(C5_lo, C2_lo * 2 + (C2_hi % TWO_POW_32 - C2_hi % TWO_POW_31) / TWO_POW_31)
+			D_hi = bit32_bxor(C5_hi, C2_hi * 2 + (C2_lo % TWO_POW_32 - C2_lo % TWO_POW_31) / TWO_POW_31)
+
+			T1_lo = bit32_bxor(D_lo, L06_lo)
+			T1_hi = bit32_bxor(D_hi, L06_hi)
+			T2_lo = bit32_bxor(D_lo, L11_lo)
+			T2_hi = bit32_bxor(D_hi, L11_hi)
+			T3_lo = bit32_bxor(D_lo, L16_lo)
+			T3_hi = bit32_bxor(D_hi, L16_hi)
+			T4_lo = bit32_bxor(D_lo, L21_lo)
+			T4_hi = bit32_bxor(D_hi, L21_hi)
+
+			L06_lo = T2_lo * TWO_POW_3 + (T2_hi % TWO_POW_32 - T2_hi % TWO_POW_29) / TWO_POW_29
+			L06_hi = T2_hi * TWO_POW_3 + (T2_lo % TWO_POW_32 - T2_lo % TWO_POW_29) / TWO_POW_29
+			L11_lo = T4_lo * TWO_POW_18 + (T4_hi % TWO_POW_32 - T4_hi % TWO_POW_14) / TWO_POW_14
+			L11_hi = T4_hi * TWO_POW_18 + (T4_lo % TWO_POW_32 - T4_lo % TWO_POW_14) / TWO_POW_14
+			L16_lo = (T1_lo % TWO_POW_32 - T1_lo % TWO_POW_28) / TWO_POW_28 + T1_hi * TWO_POW_4
+			L16_hi = (T1_hi % TWO_POW_32 - T1_hi % TWO_POW_28) / TWO_POW_28 + T1_lo * TWO_POW_4
+			L21_lo = (T3_lo % TWO_POW_32 - T3_lo % TWO_POW_23) / TWO_POW_23 + T3_hi * TWO_POW_9
+			L21_hi = (T3_hi % TWO_POW_32 - T3_hi % TWO_POW_23) / TWO_POW_23 + T3_lo * TWO_POW_9
+
+			L01_lo = bit32_bxor(D_lo, L01_lo)
+			L01_hi = bit32_bxor(D_hi, L01_hi)
+			L01_lo, L02_lo, L03_lo, L04_lo, L05_lo = bit32_bxor(L01_lo, bit32_band(-1 - L02_lo, L03_lo)), bit32_bxor(L02_lo, bit32_band(-1 - L03_lo, L04_lo)), bit32_bxor(L03_lo, bit32_band(-1 - L04_lo, L05_lo)), bit32_bxor(L04_lo, bit32_band(-1 - L05_lo, L01_lo)), bit32_bxor(L05_lo, bit32_band(-1 - L01_lo, L02_lo))
+			L01_hi, L02_hi, L03_hi, L04_hi, L05_hi = bit32_bxor(L01_hi, bit32_band(-1 - L02_hi, L03_hi)), bit32_bxor(L02_hi, bit32_band(-1 - L03_hi, L04_hi)), bit32_bxor(L03_hi, bit32_band(-1 - L04_hi, L05_hi)), bit32_bxor(L04_hi, bit32_band(-1 - L05_hi, L01_hi)), bit32_bxor(L05_hi, bit32_band(-1 - L01_hi, L02_hi))
+			L06_lo, L07_lo, L08_lo, L09_lo, L10_lo = bit32_bxor(L09_lo, bit32_band(-1 - L10_lo, L06_lo)), bit32_bxor(L10_lo, bit32_band(-1 - L06_lo, L07_lo)), bit32_bxor(L06_lo, bit32_band(-1 - L07_lo, L08_lo)), bit32_bxor(L07_lo, bit32_band(-1 - L08_lo, L09_lo)), bit32_bxor(L08_lo, bit32_band(-1 - L09_lo, L10_lo))
+			L06_hi, L07_hi, L08_hi, L09_hi, L10_hi = bit32_bxor(L09_hi, bit32_band(-1 - L10_hi, L06_hi)), bit32_bxor(L10_hi, bit32_band(-1 - L06_hi, L07_hi)), bit32_bxor(L06_hi, bit32_band(-1 - L07_hi, L08_hi)), bit32_bxor(L07_hi, bit32_band(-1 - L08_hi, L09_hi)), bit32_bxor(L08_hi, bit32_band(-1 - L09_hi, L10_hi))
+			L11_lo, L12_lo, L13_lo, L14_lo, L15_lo = bit32_bxor(L12_lo, bit32_band(-1 - L13_lo, L14_lo)), bit32_bxor(L13_lo, bit32_band(-1 - L14_lo, L15_lo)), bit32_bxor(L14_lo, bit32_band(-1 - L15_lo, L11_lo)), bit32_bxor(L15_lo, bit32_band(-1 - L11_lo, L12_lo)), bit32_bxor(L11_lo, bit32_band(-1 - L12_lo, L13_lo))
+			L11_hi, L12_hi, L13_hi, L14_hi, L15_hi = bit32_bxor(L12_hi, bit32_band(-1 - L13_hi, L14_hi)), bit32_bxor(L13_hi, bit32_band(-1 - L14_hi, L15_hi)), bit32_bxor(L14_hi, bit32_band(-1 - L15_hi, L11_hi)), bit32_bxor(L15_hi, bit32_band(-1 - L11_hi, L12_hi)), bit32_bxor(L11_hi, bit32_band(-1 - L12_hi, L13_hi))
+			L16_lo, L17_lo, L18_lo, L19_lo, L20_lo = bit32_bxor(L20_lo, bit32_band(-1 - L16_lo, L17_lo)), bit32_bxor(L16_lo, bit32_band(-1 - L17_lo, L18_lo)), bit32_bxor(L17_lo, bit32_band(-1 - L18_lo, L19_lo)), bit32_bxor(L18_lo, bit32_band(-1 - L19_lo, L20_lo)), bit32_bxor(L19_lo, bit32_band(-1 - L20_lo, L16_lo))
+			L16_hi, L17_hi, L18_hi, L19_hi, L20_hi = bit32_bxor(L20_hi, bit32_band(-1 - L16_hi, L17_hi)), bit32_bxor(L16_hi, bit32_band(-1 - L17_hi, L18_hi)), bit32_bxor(L17_hi, bit32_band(-1 - L18_hi, L19_hi)), bit32_bxor(L18_hi, bit32_band(-1 - L19_hi, L20_hi)), bit32_bxor(L19_hi, bit32_band(-1 - L20_hi, L16_hi))
+			L21_lo, L22_lo, L23_lo, L24_lo, L25_lo = bit32_bxor(L23_lo, bit32_band(-1 - L24_lo, L25_lo)), bit32_bxor(L24_lo, bit32_band(-1 - L25_lo, L21_lo)), bit32_bxor(L25_lo, bit32_band(-1 - L21_lo, L22_lo)), bit32_bxor(L21_lo, bit32_band(-1 - L22_lo, L23_lo)), bit32_bxor(L22_lo, bit32_band(-1 - L23_lo, L24_lo))
+			L21_hi, L22_hi, L23_hi, L24_hi, L25_hi = bit32_bxor(L23_hi, bit32_band(-1 - L24_hi, L25_hi)), bit32_bxor(L24_hi, bit32_band(-1 - L25_hi, L21_hi)), bit32_bxor(L25_hi, bit32_band(-1 - L21_hi, L22_hi)), bit32_bxor(L21_hi, bit32_band(-1 - L22_hi, L23_hi)), bit32_bxor(L22_hi, bit32_band(-1 - L23_hi, L24_hi))
+			L01_lo = bit32_bxor(L01_lo, RC_lo[round_idx])
+			L01_hi = L01_hi + RC_hi[round_idx] -- RC_hi[] is either 0 or 0x80000000, so we could use fast addition instead of slow XOR
+		end
+
+		lanes_lo[1] = L01_lo
+		lanes_hi[1] = L01_hi
+		lanes_lo[2] = L02_lo
+		lanes_hi[2] = L02_hi
+		lanes_lo[3] = L03_lo
+		lanes_hi[3] = L03_hi
+		lanes_lo[4] = L04_lo
+		lanes_hi[4] = L04_hi
+		lanes_lo[5] = L05_lo
+		lanes_hi[5] = L05_hi
+		lanes_lo[6] = L06_lo
+		lanes_hi[6] = L06_hi
+		lanes_lo[7] = L07_lo
+		lanes_hi[7] = L07_hi
+		lanes_lo[8] = L08_lo
+		lanes_hi[8] = L08_hi
+		lanes_lo[9] = L09_lo
+		lanes_hi[9] = L09_hi
+		lanes_lo[10] = L10_lo
+		lanes_hi[10] = L10_hi
+		lanes_lo[11] = L11_lo
+		lanes_hi[11] = L11_hi
+		lanes_lo[12] = L12_lo
+		lanes_hi[12] = L12_hi
+		lanes_lo[13] = L13_lo
+		lanes_hi[13] = L13_hi
+		lanes_lo[14] = L14_lo
+		lanes_hi[14] = L14_hi
+		lanes_lo[15] = L15_lo
+		lanes_hi[15] = L15_hi
+		lanes_lo[16] = L16_lo
+		lanes_hi[16] = L16_hi
+		lanes_lo[17] = L17_lo
+		lanes_hi[17] = L17_hi
+		lanes_lo[18] = L18_lo
+		lanes_hi[18] = L18_hi
+		lanes_lo[19] = L19_lo
+		lanes_hi[19] = L19_hi
+		lanes_lo[20] = L20_lo
+		lanes_hi[20] = L20_hi
+		lanes_lo[21] = L21_lo
+		lanes_hi[21] = L21_hi
+		lanes_lo[22] = L22_lo
+		lanes_hi[22] = L22_hi
+		lanes_lo[23] = L23_lo
+		lanes_hi[23] = L23_hi
+		lanes_lo[24] = L24_lo
+		lanes_hi[24] = L24_hi
+		lanes_lo[25] = L25_lo
+		lanes_hi[25] = L25_hi
+	end
+end
+
+--------------------------------------------------------------------------------
+-- MAGIC NUMBERS CALCULATOR
+--------------------------------------------------------------------------------
+-- Q:
+--    Is 53-bit "double" math enough to calculate square roots and cube roots of primes with 64 correct bits after decimal point?
+-- A:
+--    Yes, 53-bit "double" arithmetic is enough.
+--    We could obtain first 40 bits by direct calculation of p^(1/3) and next 40 bits by one step of Newton's method.
+do
+	local function mul(src1, src2, factor, result_length)
+		-- src1, src2 - long integers (arrays of digits in base TWO_POW_24)
+		-- factor - small integer
+		-- returns long integer result (src1 * src2 * factor) and its floating point approximation
+		local result, carry, value, weight = table.create(result_length), 0, 0, 1
+		for j = 1, result_length do
+			for k = math.max(1, j + 1 - #src2), math.min(j, #src1) do
+				carry = carry + factor * src1[k] * src2[j + 1 - k] -- "int32" is not enough for multiplication result, that's why "factor" must be of type "double"
+			end
+
+			local digit = carry % TWO_POW_24
+			result[j] = math.floor(digit)
+			carry = (carry - digit) / TWO_POW_24
+			value = value + digit * weight
+			weight = weight * TWO_POW_24
+		end
+
+		return result, value
+	end
+
+	local idx, step, p, one, sqrt_hi, sqrt_lo = 0, {4, 1, 2, -2, 2}, 4, {1}, sha2_H_hi, sha2_H_lo
+	repeat
+		p = p + step[p % 6]
+		local d = 1
+		repeat
+			d = d + step[d % 6]
+			if d * d > p then
+				-- next prime number is found
+				local root = p ^ (1 / 3)
+				local R = root * TWO_POW_40
+				R = mul(table.create(1, math.floor(R)), one, 1, 2)
+				local _, delta = mul(R, mul(R, R, 1, 4), -1, 4)
+				local hi = R[2] % 65536 * 65536 + math.floor(R[1] / 256)
+				local lo = R[1] % 256 * 16777216 + math.floor(delta * (TWO_POW_NEG_56 / 3) * root / p)
+
+				if idx < 16 then
+					root = math.sqrt(p)
+					R = root * TWO_POW_40
+					R = mul(table.create(1, math.floor(R)), one, 1, 2)
+					_, delta = mul(R, R, -1, 2)
+					local hi = R[2] % 65536 * 65536 + math.floor(R[1] / 256)
+					local lo = R[1] % 256 * 16777216 + math.floor(delta * TWO_POW_NEG_17 / root)
+					local idx = idx % 8 + 1
+					sha2_H_ext256[224][idx] = lo
+					sqrt_hi[idx], sqrt_lo[idx] = hi, lo + hi * hi_factor
+					if idx > 7 then
+						sqrt_hi, sqrt_lo = sha2_H_ext512_hi[384], sha2_H_ext512_lo[384]
+					end
+				end
+
+				idx = idx + 1
+				sha2_K_hi[idx], sha2_K_lo[idx] = hi, lo % K_lo_modulo + hi * hi_factor
+				break
+			end
+		until p % d == 0
+	until idx > 79
+end
+
+-- Calculating IVs for SHA512/224 and SHA512/256
+for width = 224, 256, 32 do
+	local H_lo, H_hi = {}, nil
+	if XOR64A5 then
+		for j = 1, 8 do
+			H_lo[j] = XOR64A5(sha2_H_lo[j])
+		end
+	else
+		H_hi = {}
+		for j = 1, 8 do
+			H_lo[j] = bit32_bxor(sha2_H_lo[j], 0xA5A5A5A5) % 4294967296
+			H_hi[j] = bit32_bxor(sha2_H_hi[j], 0xA5A5A5A5) % 4294967296
+		end
+	end
+
+	sha512_feed_128(H_lo, H_hi, "SHA-512/" .. tostring(width) .. "\128" .. string.rep("\0", 115) .. "\88", 0, 128)
+	sha2_H_ext512_lo[width] = H_lo
+	sha2_H_ext512_hi[width] = H_hi
+end
+
+-- Constants for MD5
+do
+	for idx = 1, 64 do
+		-- we can't use formula math.floor(abs(sin(idx))*TWO_POW_32) because its result may be beyond integer range on Lua built with 32-bit integers
+		local hi, lo = math.modf(math.abs(math.sin(idx)) * TWO_POW_16)
+		md5_K[idx] = hi * 65536 + math.floor(lo * TWO_POW_16)
+	end
+end
+
+-- Constants for SHA3
+do
+	local sh_reg = 29
+	local function next_bit()
+		local r = sh_reg % 2
+		sh_reg = bit32_bxor((sh_reg - r) / 2, 142 * r)
+		return r
+	end
+
+	for idx = 1, 24 do
+		local lo, m = 0, nil
+		for _ = 1, 6 do
+			m = m and m * m * 2 or 1
+			lo = lo + next_bit() * m
+		end
+
+		local hi = next_bit() * m
+		sha3_RC_hi[idx], sha3_RC_lo[idx] = hi, lo + hi * hi_factor_keccak
+	end
+end
+
+--------------------------------------------------------------------------------
+-- MAIN FUNCTIONS
+--------------------------------------------------------------------------------
+local function sha256ext(width, message)
+	-- Create an instance (private objects for current calculation)
+	local Array256 = sha2_H_ext256[width] -- # == 8
+	local length, tail = 0, ""
+	local H = table.create(8)
+	H[1], H[2], H[3], H[4], H[5], H[6], H[7], H[8] = Array256[1], Array256[2], Array256[3], Array256[4], Array256[5], Array256[6], Array256[7], Array256[8]
+
+	local function partial(message_part)
+		if message_part then
+			local partLength = #message_part
+			if tail then
+				length = length + partLength
+				local offs = 0
+				local tailLength = #tail
+				if tail ~= "" and tailLength + partLength >= 64 then
+					offs = 64 - tailLength
+					sha256_feed_64(H, tail .. string.sub(message_part, 1, offs), 0, 64)
+					tail = ""
+				end
+
+				local size = partLength - offs
+				local size_tail = size % 64
+				sha256_feed_64(H, message_part, offs, size - size_tail)
+				tail = tail .. string.sub(message_part, partLength + 1 - size_tail)
+				return partial
+			else
+				error("Adding more chunks is not allowed after receiving the result", 2)
+			end
+		else
+			if tail then
+				local final_blocks = table.create(10) --{tail, "\128", string.rep("\0", (-9 - length) % 64 + 1)}
+				final_blocks[1] = tail
+				final_blocks[2] = "\128"
+				final_blocks[3] = string.rep("\0", (-9 - length) % 64 + 1)
+
+				tail = nil
+				-- Assuming user data length is shorter than (TWO_POW_53)-9 bytes
+				-- Anyway, it looks very unrealistic that someone would spend more than a year of calculations to process TWO_POW_53 bytes of data by using this Lua script :-)
+				-- TWO_POW_53 bytes = TWO_POW_56 bits, so "bit-counter" fits in 7 bytes
+				length = length * (8 / TWO56_POW_7) -- convert "byte-counter" to "bit-counter" and move decimal point to the left
+				for j = 4, 10 do
+					length = length % 1 * 256
+					final_blocks[j] = string.char(math.floor(length))
+				end
+
+				final_blocks = table.concat(final_blocks)
+				sha256_feed_64(H, final_blocks, 0, #final_blocks)
+				local max_reg = width / 32
+				for j = 1, max_reg do
+					H[j] = string.format("%08x", H[j] % 4294967296)
+				end
+
+				H = table.concat(H, "", 1, max_reg)
+			end
+
+			return H
+		end
+	end
+
+	if message then
+		-- Actually perform calculations and return the SHA256 digest of a message
+		return partial(message)()
+	else
+		-- Return function for chunk-by-chunk loading
+		-- User should feed every chunk of input data as single argument to this function and finally get SHA256 digest by invoking this function without an argument
+		return partial
+	end
+end
+
+local function sha512ext(width, message)
+
+	-- Create an instance (private objects for current calculation)
+	local length, tail, H_lo, H_hi = 0, "", table.pack(table.unpack(sha2_H_ext512_lo[width])), not HEX64 and table.pack(table.unpack(sha2_H_ext512_hi[width]))
+
+	local function partial(message_part)
+		if message_part then
+			local partLength = #message_part
+			if tail then
+				length = length + partLength
+				local offs = 0
+				if tail ~= "" and #tail + partLength >= 128 then
+					offs = 128 - #tail
+					sha512_feed_128(H_lo, H_hi, tail .. string.sub(message_part, 1, offs), 0, 128)
+					tail = ""
+				end
+
+				local size = partLength - offs
+				local size_tail = size % 128
+				sha512_feed_128(H_lo, H_hi, message_part, offs, size - size_tail)
+				tail = tail .. string.sub(message_part, partLength + 1 - size_tail)
+				return partial
+			else
+				error("Adding more chunks is not allowed after receiving the result", 2)
+			end
+		else
+			if tail then
+				local final_blocks = table.create(3) --{tail, "\128", string.rep("\0", (-17-length) % 128 + 9)}
+				final_blocks[1] = tail
+				final_blocks[2] = "\128"
+				final_blocks[3] = string.rep("\0", (-17 - length) % 128 + 9)
+
+				tail = nil
+				-- Assuming user data length is shorter than (TWO_POW_53)-17 bytes
+				-- TWO_POW_53 bytes = TWO_POW_56 bits, so "bit-counter" fits in 7 bytes
+				length = length * (8 / TWO56_POW_7) -- convert "byte-counter" to "bit-counter" and move floating point to the left
+				for j = 4, 10 do
+					length = length % 1 * 256
+					final_blocks[j] = string.char(math.floor(length))
+				end
+
+				final_blocks = table.concat(final_blocks)
+				sha512_feed_128(H_lo, H_hi, final_blocks, 0, #final_blocks)
+				local max_reg = math.ceil(width / 64)
+
+				if HEX64 then
+					for j = 1, max_reg do
+						H_lo[j] = HEX64(H_lo[j])
+					end
+				else
+					for j = 1, max_reg do
+						H_lo[j] = string.format("%08x", H_hi[j] % 4294967296) .. string.format("%08x", H_lo[j] % 4294967296)
+					end
+
+					H_hi = nil
+				end
+
+				H_lo = string.sub(table.concat(H_lo, "", 1, max_reg), 1, width / 4)
+			end
+
+			return H_lo
+		end
+	end
+
+	if message then
+		-- Actually perform calculations and return the SHA512 digest of a message
+		return partial(message)()
+	else
+		-- Return function for chunk-by-chunk loading
+		-- User should feed every chunk of input data as single argument to this function and finally get SHA512 digest by invoking this function without an argument
+		return partial
+	end
+end
+
+local function md5(message)
+
+	-- Create an instance (private objects for current calculation)
+	local H, length, tail = table.create(4), 0, ""
+	H[1], H[2], H[3], H[4] = md5_sha1_H[1], md5_sha1_H[2], md5_sha1_H[3], md5_sha1_H[4]
+
+	local function partial(message_part)
+		if message_part then
+			local partLength = #message_part
+			if tail then
+				length = length + partLength
+				local offs = 0
+				if tail ~= "" and #tail + partLength >= 64 then
+					offs = 64 - #tail
+					md5_feed_64(H, tail .. string.sub(message_part, 1, offs), 0, 64)
+					tail = ""
+				end
+
+				local size = partLength - offs
+				local size_tail = size % 64
+				md5_feed_64(H, message_part, offs, size - size_tail)
+				tail = tail .. string.sub(message_part, partLength + 1 - size_tail)
+				return partial
+			else
+				error("Adding more chunks is not allowed after receiving the result", 2)
+			end
+		else
+			if tail then
+				local final_blocks = table.create(3) --{tail, "\128", string.rep("\0", (-9 - length) % 64)}
+				final_blocks[1] = tail
+				final_blocks[2] = "\128"
+				final_blocks[3] = string.rep("\0", (-9 - length) % 64)
+				tail = nil
+				length = length * 8 -- convert "byte-counter" to "bit-counter"
+				for j = 4, 11 do
+					local low_byte = length % 256
+					final_blocks[j] = string.char(low_byte)
+					length = (length - low_byte) / 256
+				end
+
+				final_blocks = table.concat(final_blocks)
+				md5_feed_64(H, final_blocks, 0, #final_blocks)
+				for j = 1, 4 do
+					H[j] = string.format("%08x", H[j] % 4294967296)
+				end
+
+				H = string.gsub(table.concat(H), "(..)(..)(..)(..)", "%4%3%2%1")
+			end
+
+			return H
+		end
+	end
+
+	if message then
+		-- Actually perform calculations and return the MD5 digest of a message
+		return partial(message)()
+	else
+		-- Return function for chunk-by-chunk loading
+		-- User should feed every chunk of input data as single argument to this function and finally get MD5 digest by invoking this function without an argument
+		return partial
+	end
+end
+
+local function sha1(message)
+	-- Create an instance (private objects for current calculation)
+	local H, length, tail = table.pack(table.unpack(md5_sha1_H)), 0, ""
+
+	local function partial(message_part)
+		if message_part then
+			local partLength = #message_part
+			if tail then
+				length = length + partLength
+				local offs = 0
+				if tail ~= "" and #tail + partLength >= 64 then
+					offs = 64 - #tail
+					sha1_feed_64(H, tail .. string.sub(message_part, 1, offs), 0, 64)
+					tail = ""
+				end
+
+				local size = partLength - offs
+				local size_tail = size % 64
+				sha1_feed_64(H, message_part, offs, size - size_tail)
+				tail = tail .. string.sub(message_part, partLength + 1 - size_tail)
+				return partial
+			else
+				error("Adding more chunks is not allowed after receiving the result", 2)
+			end
+		else
+			if tail then
+				local final_blocks = table.create(10) --{tail, "\128", string.rep("\0", (-9 - length) % 64 + 1)}
+				final_blocks[1] = tail
+				final_blocks[2] = "\128"
+				final_blocks[3] = string.rep("\0", (-9 - length) % 64 + 1)
+				tail = nil
+
+				-- Assuming user data length is shorter than (TWO_POW_53)-9 bytes
+				-- TWO_POW_53 bytes = TWO_POW_56 bits, so "bit-counter" fits in 7 bytes
+				length = length * (8 / TWO56_POW_7) -- convert "byte-counter" to "bit-counter" and move decimal point to the left
+				for j = 4, 10 do
+					length = length % 1 * 256
+					final_blocks[j] = string.char(math.floor(length))
+				end
+
+				final_blocks = table.concat(final_blocks)
+				sha1_feed_64(H, final_blocks, 0, #final_blocks)
+				for j = 1, 5 do
+					H[j] = string.format("%08x", H[j] % 4294967296)
+				end
+
+				H = table.concat(H)
+			end
+
+			return H
+		end
+	end
+
+	if message then
+		-- Actually perform calculations and return the SHA-1 digest of a message
+		return partial(message)()
+	else
+		-- Return function for chunk-by-chunk loading
+		-- User should feed every chunk of input data as single argument to this function and finally get SHA-1 digest by invoking this function without an argument
+		return partial
+	end
+end
+
+local function keccak(block_size_in_bytes, digest_size_in_bytes, is_SHAKE, message)
+	-- "block_size_in_bytes" is multiple of 8
+	if type(digest_size_in_bytes) ~= "number" then
+		-- arguments in SHAKE are swapped:
+		--    NIST FIPS 202 defines SHAKE(message,num_bits)
+		--    this module   defines SHAKE(num_bytes,message)
+		-- it's easy to forget about this swap, hence the check
+		error("Argument 'digest_size_in_bytes' must be a number", 2)
+	end
+
+	-- Create an instance (private objects for current calculation)
+	local tail, lanes_lo, lanes_hi = "", table.create(25, 0), hi_factor_keccak == 0 and table.create(25, 0)
+	local result
+
+	--~     pad the input N using the pad function, yielding a padded bit string P with a length divisible by r (such that n = len(P)/r is integer),
+	--~     break P into n consecutive r-bit pieces P0, ..., Pn-1 (last is zero-padded)
+	--~     initialize the state S to a string of b 0 bits.
+	--~     absorb the input into the state: For each block Pi,
+	--~         extend Pi at the end by a string of c 0 bits, yielding one of length b,
+	--~         XOR that with S and
+	--~         apply the block permutation f to the result, yielding a new state S
+	--~     initialize Z to be the empty string
+	--~     while the length of Z is less than d:
+	--~         append the first r bits of S to Z
+	--~         if Z is still less than d bits long, apply f to S, yielding a new state S.
+	--~     truncate Z to d bits
+	local function partial(message_part)
+		if message_part then
+			local partLength = #message_part
+			if tail then
+				local offs = 0
+				if tail ~= "" and #tail + partLength >= block_size_in_bytes then
+					offs = block_size_in_bytes - #tail
+					keccak_feed(lanes_lo, lanes_hi, tail .. string.sub(message_part, 1, offs), 0, block_size_in_bytes, block_size_in_bytes)
+					tail = ""
+				end
+
+				local size = partLength - offs
+				local size_tail = size % block_size_in_bytes
+				keccak_feed(lanes_lo, lanes_hi, message_part, offs, size - size_tail, block_size_in_bytes)
+				tail = tail .. string.sub(message_part, partLength + 1 - size_tail)
+				return partial
+			else
+				error("Adding more chunks is not allowed after receiving the result", 2)
+			end
+		else
+			if tail then
+				-- append the following bits to the message: for usual SHA3: 011(0*)1, for SHAKE: 11111(0*)1
+				local gap_start = is_SHAKE and 31 or 6
+				tail = tail .. (#tail + 1 == block_size_in_bytes and string.char(gap_start + 128) or string.char(gap_start) .. string.rep("\0", (-2 - #tail) % block_size_in_bytes) .. "\128")
+				keccak_feed(lanes_lo, lanes_hi, tail, 0, #tail, block_size_in_bytes)
+				tail = nil
+
+				local lanes_used = 0
+				local total_lanes = math.floor(block_size_in_bytes / 8)
+				local qwords = {}
+
+				local function get_next_qwords_of_digest(qwords_qty)
+					-- returns not more than 'qwords_qty' qwords ('qwords_qty' might be non-integer)
+					-- doesn't go across keccak-buffer boundary
+					-- block_size_in_bytes is a multiple of 8, so, keccak-buffer contains integer number of qwords
+					if lanes_used >= total_lanes then
+						keccak_feed(lanes_lo, lanes_hi, "\0\0\0\0\0\0\0\0", 0, 8, 8)
+						lanes_used = 0
+					end
+
+					qwords_qty = math.floor(math.min(qwords_qty, total_lanes - lanes_used))
+					if hi_factor_keccak ~= 0 then
+						for j = 1, qwords_qty do
+							qwords[j] = HEX64(lanes_lo[lanes_used + j - 1 + lanes_index_base])
+						end
+					else
+						for j = 1, qwords_qty do
+							qwords[j] = string.format("%08x", lanes_hi[lanes_used + j] % 4294967296) .. string.format("%08x", lanes_lo[lanes_used + j] % 4294967296)
+						end
+					end
+
+					lanes_used = lanes_used + qwords_qty
+					return string.gsub(table.concat(qwords, "", 1, qwords_qty), "(..)(..)(..)(..)(..)(..)(..)(..)", "%8%7%6%5%4%3%2%1"), qwords_qty * 8
+				end
+
+				local parts = {} -- digest parts
+				local last_part, last_part_size = "", 0
+
+				local function get_next_part_of_digest(bytes_needed)
+					-- returns 'bytes_needed' bytes, for arbitrary integer 'bytes_needed'
+					bytes_needed = bytes_needed or 1
+					if bytes_needed <= last_part_size then
+						last_part_size = last_part_size - bytes_needed
+						local part_size_in_nibbles = bytes_needed * 2
+						local result = string.sub(last_part, 1, part_size_in_nibbles)
+						last_part = string.sub(last_part, part_size_in_nibbles + 1)
+						return result
+					end
+
+					local parts_qty = 0
+					if last_part_size > 0 then
+						parts_qty = 1
+						parts[parts_qty] = last_part
+						bytes_needed = bytes_needed - last_part_size
+					end
+
+					-- repeats until the length is enough
+					while bytes_needed >= 8 do
+						local next_part, next_part_size = get_next_qwords_of_digest(bytes_needed / 8)
+						parts_qty = parts_qty + 1
+						parts[parts_qty] = next_part
+						bytes_needed = bytes_needed - next_part_size
+					end
+
+					if bytes_needed > 0 then
+						last_part, last_part_size = get_next_qwords_of_digest(1)
+						parts_qty = parts_qty + 1
+						parts[parts_qty] = get_next_part_of_digest(bytes_needed)
+					else
+						last_part, last_part_size = "", 0
+					end
+
+					return table.concat(parts, "", 1, parts_qty)
+				end
+
+				if digest_size_in_bytes < 0 then
+					result = get_next_part_of_digest
+				else
+					result = get_next_part_of_digest(digest_size_in_bytes)
+				end
+
+			end
+
+			return result
+		end
+	end
+
+	if message then
+		-- Actually perform calculations and return the SHA3 digest of a message
+		return partial(message)()
+	else
+		-- Return function for chunk-by-chunk loading
+		-- User should feed every chunk of input data as single argument to this function and finally get SHA3 digest by invoking this function without an argument
+		return partial
+	end
+end
+
+local function HexToBinFunction(hh)
+	return string.char(tonumber(hh, 16))
+end
+
+local function hex2bin(hex_string)
+	return (string.gsub(hex_string, "%x%x", HexToBinFunction))
+end
+
+local base64_symbols = {
+	["+"] = 62, ["-"] = 62, [62] = "+";
+	["/"] = 63, ["_"] = 63, [63] = "/";
+	["="] = -1, ["."] = -1, [-1] = "=";
+}
+
+local symbol_index = 0
+for j, pair in ipairs{"AZ", "az", "09"} do
+	for ascii = string.byte(pair), string.byte(pair, 2) do
+		local ch = string.char(ascii)
+		base64_symbols[ch] = symbol_index
+		base64_symbols[symbol_index] = ch
+		symbol_index = symbol_index + 1
+	end
+end
+
+local function bin2base64(binary_string)
+	local stringLength = #binary_string
+	local result = table.create(math.ceil(stringLength / 3))
+	local length = 0
+
+	for pos = 1, #binary_string, 3 do
+		local c1, c2, c3, c4 = string.byte(string.sub(binary_string, pos, pos + 2) .. '\0', 1, -1)
+		length = length + 1
+		result[length] =
+			base64_symbols[math.floor(c1 / 4)] ..
+			base64_symbols[c1 % 4 * 16 + math.floor(c2 / 16)] ..
+			base64_symbols[c3 and c2 % 16 * 4 + math.floor(c3 / 64) or -1] ..
+			base64_symbols[c4 and c3 % 64 or -1]
+	end
+
+	return table.concat(result)
+end
+
+local function base642bin(base64_string)
+	local result, chars_qty = {}, 3
+	for pos, ch in string.gmatch(string.gsub(base64_string, "%s+", ""), "()(.)") do
+		local code = base64_symbols[ch]
+		if code < 0 then
+			chars_qty = chars_qty - 1
+			code = 0
+		end
+
+		local idx = pos % 4
+		if idx > 0 then
+			result[-idx] = code
+		else
+			local c1 = result[-1] * 4 + math.floor(result[-2] / 16)
+			local c2 = (result[-2] % 16) * 16 + math.floor(result[-3] / 4)
+			local c3 = (result[-3] % 4) * 64 + code
+			result[#result + 1] = string.sub(string.char(c1, c2, c3), 1, chars_qty)
+		end
+	end
+
+	return table.concat(result)
+end
+
+local block_size_for_HMAC -- this table will be initialized at the end of the module
+--local function pad_and_xor(str, result_length, byte_for_xor)
+--	return string.gsub(str, ".", function(c)
+--		return string.char(bit32_bxor(string.byte(c), byte_for_xor))
+--	end) .. string.rep(string.char(byte_for_xor), result_length - #str)
+--end
+
+-- For the sake of speed of converting hexes to strings, there's a map of the conversions here
+local BinaryStringMap = {}
+for Index = 0, 255 do
+	BinaryStringMap[string.format("%02x", Index)] = string.char(Index)
+end
+
+-- Update 02.14.20 - added AsBinary for easy GameAnalytics replacement.
+local function hmac(hash_func, key, message, AsBinary)
+	-- Create an instance (private objects for current calculation)
+	local block_size = block_size_for_HMAC[hash_func]
+	if not block_size then
+		error("Unknown hash function", 2)
+	end
+
+	local KeyLength = #key
+	if KeyLength > block_size then
+		key = string.gsub(hash_func(key), "%x%x", HexToBinFunction)
+		KeyLength = #key
+	end
+
+	local append = hash_func()(string.gsub(key, ".", function(c)
+		return string.char(bit32_bxor(string.byte(c), 0x36))
+	end) .. string.rep("6", block_size - KeyLength)) -- 6 = string.char(0x36)
+
+	local result
+
+	local function partial(message_part)
+		if not message_part then
+			result = result or hash_func(
+				string.gsub(key, ".", function(c)
+					return string.char(bit32_bxor(string.byte(c), 0x5c))
+				end) .. string.rep("\\", block_size - KeyLength) -- \ = string.char(0x5c)
+				.. (string.gsub(append(), "%x%x", HexToBinFunction))
+			)
+
+			return result
+		elseif result then
+			error("Adding more chunks is not allowed after receiving the result", 2)
+		else
+			append(message_part)
+			return partial
+		end
+	end
+
+	if message then
+		-- Actually perform calculations and return the HMAC of a message
+		local FinalMessage = partial(message)()
+		return AsBinary and (string.gsub(FinalMessage, "%x%x", BinaryStringMap)) or FinalMessage
+	else
+		-- Return function for chunk-by-chunk loading of a message
+		-- User should feed every chunk of the message as single argument to this function and finally get HMAC by invoking this function without an argument
+		return partial
+	end
+end
+
+local sha = {
+	md5 = md5,
+	sha1 = sha1,
+	-- SHA2 hash functions:
+	sha224 = function(message)
+		return sha256ext(224, message)
+	end;
+
+	sha256 = function(message)
+		return sha256ext(256, message)
+	end;
+
+	sha512_224 = function(message)
+		return sha512ext(224, message)
+	end;
+
+	sha512_256 = function(message)
+		return sha512ext(256, message)
+	end;
+
+	sha384 = function(message)
+		return sha512ext(384, message)
+	end;
+
+	sha512 = function(message)
+		return sha512ext(512, message)
+	end;
+
+	-- SHA3 hash functions:
+	sha3_224 = function(message)
+		return keccak((1600 - 2 * 224) / 8, 224 / 8, false, message)
+	end;
+
+	sha3_256 = function(message)
+		return keccak((1600 - 2 * 256) / 8, 256 / 8, false, message)
+	end;
+
+	sha3_384 = function(message)
+		return keccak((1600 - 2 * 384) / 8, 384 / 8, false, message)
+	end;
+
+	sha3_512 = function(message)
+		return keccak((1600 - 2 * 512) / 8, 512 / 8, false, message)
+	end;
+
+	shake128 = function(message, digest_size_in_bytes)
+		return keccak((1600 - 2 * 128) / 8, digest_size_in_bytes, true, message)
+	end;
+
+	shake256 = function(message, digest_size_in_bytes)
+		return keccak((1600 - 2 * 256) / 8, digest_size_in_bytes, true, message)
+	end;
+
+	-- misc utilities:
+	hmac = hmac; -- HMAC(hash_func, key, message) is applicable to any hash function from this module except SHAKE*
+	hex_to_bin = hex2bin; -- converts hexadecimal representation to binary string
+	base64_to_bin = base642bin; -- converts base64 representation to binary string
+	bin_to_base64 = bin2base64; -- converts binary string to base64 representation
+	base64_encode = Base64.Encode;
+	base64_decode = Base64.Decode;
+}
+
+block_size_for_HMAC = {
+	[sha.md5] = 64;
+	[sha.sha1] = 64;
+	[sha.sha224] = 64;
+	[sha.sha256] = 64;
+	[sha.sha512_224] = 128;
+	[sha.sha512_256] = 128;
+	[sha.sha384] = 128;
+	[sha.sha512] = 128;
+	[sha.sha3_224] = (1600 - 2 * 224) / 8;
+	[sha.sha3_256] = (1600 - 2 * 256) / 8;
+	[sha.sha3_384] = (1600 - 2 * 384) / 8;
+	[sha.sha3_512] = (1600 - 2 * 512) / 8;
+}
+
+return sha]]></ProtectedString>
+      </Properties>
+      
+    <Item class="ModuleScript" referent="RBX000003F3">
+      <Properties>
+        <string name="Name">Base64</string>
+        <ProtectedString name="Source"><![CDATA[-- @original: https://gist.github.com/Reselim/40d62b17d138cc74335a1b0709e19ce2
+local Alphabet = {}
+local Indexes = {}
+
+-- A-Z
+for Index = 65, 90 do
+	table.insert(Alphabet, Index)
+end
+
+-- a-z
+for Index = 97, 122 do
+	table.insert(Alphabet, Index)
+end
+
+-- 0-9
+for Index = 48, 57 do
+	table.insert(Alphabet, Index)
+end
+
+table.insert(Alphabet, 43) -- +
+table.insert(Alphabet, 47) -- /
+
+for Index, Character in ipairs(Alphabet) do
+	Indexes[Character] = Index
+end
+
+local Base64 = {}
+
+local bit32_rshift = bit32.rshift
+local bit32_lshift = bit32.lshift
+local bit32_band = bit32.band
+
+--[[**
+	Encodes a string in Base64.
+	@param [t:string] Input The input string to encode.
+	@returns [t:string] The string encoded in Base64.
+**--]]
+function Base64.Encode(Input)
+	local Output = {}
+	local Length = 0
+
+	for Index = 1, #Input, 3 do
+		local C1, C2, C3 = string.byte(Input, Index, Index + 2)
+
+		local A = bit32_rshift(C1, 2)
+		local B = bit32_lshift(bit32_band(C1, 3), 4) + bit32_rshift(C2 or 0, 4)
+		local C = bit32_lshift(bit32_band(C2 or 0, 15), 2) + bit32_rshift(C3 or 0, 6)
+		local D = bit32_band(C3 or 0, 63)
+
+		Length = Length + 1
+		Output[Length] = Alphabet[A + 1]
+
+		Length = Length + 1
+		Output[Length] = Alphabet[B + 1]
+
+		Length = Length + 1
+		Output[Length] = C2 and Alphabet[C + 1] or 61
+
+		Length = Length + 1
+		Output[Length] = C3 and Alphabet[D + 1] or 61
+	end
+
+	local NewOutput = {}
+	local NewLength = 0
+	local IndexAdd4096Sub1
+
+	for Index = 1, Length, 4096 do
+		NewLength = NewLength + 1
+		IndexAdd4096Sub1 = Index + 4096 - 1
+
+		NewOutput[NewLength] = string.char(table.unpack(
+			Output,
+			Index,
+			IndexAdd4096Sub1 > Length and Length or IndexAdd4096Sub1
+		))
+	end
+
+	return table.concat(NewOutput)
+end
+
+--[[**
+	Decodes a string from Base64.
+	@param [t:string] Input The input string to decode.
+	@returns [t:string] The newly decoded string.
+**--]]
+function Base64.Decode(Input)
+	local Output = {}
+	local Length = 0
+
+	for Index = 1, #Input, 4 do
+		local C1, C2, C3, C4 = string.byte(Input, Index, Index + 3)
+
+		local I1 = Indexes[C1] - 1
+		local I2 = Indexes[C2] - 1
+		local I3 = (Indexes[C3] or 1) - 1
+		local I4 = (Indexes[C4] or 1) - 1
+
+		local A = bit32_lshift(I1, 2) + bit32_rshift(I2, 4)
+		local B = bit32_lshift(bit32_band(I2, 15), 4) + bit32_rshift(I3, 2)
+		local C = bit32_lshift(bit32_band(I3, 3), 6) + I4
+
+		Length = Length + 1
+		Output[Length] = A
+
+		if C3 ~= 61 then
+			Length = Length + 1
+			Output[Length] = B
+		end
+
+		if C4 ~= 61 then
+			Length = Length + 1
+			Output[Length] = C
+		end
+	end
+
+	local NewOutput = {}
+	local NewLength = 0
+	local IndexAdd4096Sub1
+
+	for Index = 1, Length, 4096 do
+		NewLength = NewLength + 1
+		IndexAdd4096Sub1 = Index + 4096 - 1
+
+		NewOutput[NewLength] = string.char(table.unpack(
+			Output,
+			Index,
+			IndexAdd4096Sub1 > Length and Length or IndexAdd4096Sub1
+		))
+	end
+
+	return table.concat(NewOutput)
+end
+
+return Base64]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    </Item>
+    </Item>
+    <Item class="Script" referent="RBX000003F6">
+      <Properties>
+        <string name="Name">Profileanalyzer</string>
+        <ProtectedString name="Source"><![CDATA[--!strict
+--[[
+	PLAY3 SDK - Player Analysis
+	Sends comprehensive player profile to backend on join
+	Backend stores this as baseline and tracks history
+]]
+
+local Players = game:GetService("Players")
+local MarketplaceService = game:GetService("MarketplaceService")
+local GroupService = game:GetService("GroupService")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+-- Don't run in edit mode
+if not RunService:IsRunning() then
+	return
+end
+
+local Config = require(script.Parent.Parent.Config)
+
+------------------------------------------------------------
+-- CONFIGURATION
+------------------------------------------------------------
+local API_URL = Config.API_URL .. "/game-events/player-analysis"
+local API_KEY = Config.API_KEY
+
+local ASSET_LOOKUP_DELAY = 0.15
+local MAX_ITEMS_TO_SCAN = 20
+local HTTP_SEND_DELAY = 0.5
+local EXPENSIVE_ITEM_THRESHOLD = 10000 -- Robux
+
+------------------------------------------------------------
+-- STATE & CACHING
+------------------------------------------------------------
+local assetInfoCache: { [number]: any } = {}
+local requestQueue = {}
+local isProcessingQueue = false
+
+------------------------------------------------------------
+-- SIMPLE HASH (for playerId obfuscation)
+------------------------------------------------------------
+local function hashPlayerId(userId: number): string
+	local str = tostring(userId)
+	local hash = 0
+	for i = 1, #str do
+		hash = (hash * 31 + string.byte(str, i)) % 2147483647
+	end
+	return string.format("%x%x%x", hash, hash * 7 % 2147483647, hash * 13 % 2147483647)
+end
+
+------------------------------------------------------------
+-- HTTP QUEUE SYSTEM
+------------------------------------------------------------
+local function processQueue()
+	if isProcessingQueue then return end
+	isProcessingQueue = true
+
+	while #requestQueue > 0 do
+		local payload = table.remove(requestQueue, 1)
+
+		local success, result = pcall(function()
+			return HttpService:PostAsync(
+				API_URL,
+				HttpService:JSONEncode(payload),
+				Enum.HttpContentType.ApplicationJson,
+				false,
+				{ ["x-api-key"] = API_KEY }
+			)
+		end)
+
+		if success then
+			print("[PLAY3 Analytics] Player analysis sent for:", payload.playerId:sub(1, 12) .. "...")
+		else
+			warn("[PLAY3 Analytics] Failed:", tostring(result))
+		end
+
+		task.wait(HTTP_SEND_DELAY)
+	end
+
+	isProcessingQueue = false
+end
+
+local function addToQueue(payload)
+	table.insert(requestQueue, payload)
+	task.spawn(processQueue)
+end
+
+------------------------------------------------------------
+-- DEVICE TYPE DETECTION
+------------------------------------------------------------
+local function getDeviceType(): string
+	if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+		return "Mobile"
+	elseif UserInputService.GamepadEnabled and not UserInputService.KeyboardEnabled then
+		return "Console"
+	else
+		return "Desktop"
+	end
+end
+
+------------------------------------------------------------
+-- ASSET SCANNING
+------------------------------------------------------------
+local function getAssetInfo(assetId: number)
+	if assetInfoCache[assetId] then return assetInfoCache[assetId] end
+
+	local success, info = pcall(function()
+		return MarketplaceService:GetProductInfo(assetId, Enum.InfoType.Asset)
+	end)
+
+	if success and info then
+		local data = {
+			name = info.Name or "Unknown",
+			price = info.PriceInRobux or 0,
+			isLimited = info.IsLimited or false,
+			isLimitedUnique = info.IsLimitedUnique or false,
+			isRobloxCreated = info.Creator and info.Creator.Name == "Roblox" or false
+		}
+		assetInfoCache[assetId] = data
+		return data
+	end
+	return nil
+end
+
+local function scanAvatar(player: Player)
+	local result = {
+		totalWornValue = 0,
+		highestItemValue = 0,
+		highestItemName = "",
+		limitedCount = 0,
+		limitedUniqueCount = 0,
+		robloxItemCount = 0,
+		ugcItemCount = 0,
+		totalItemsWorn = 0,
+		expensiveItemsOwned = 0,
+		scannedItems = {}
+	}
+
+	local success, desc = pcall(function()
+		return Players:GetHumanoidDescriptionFromUserId(player.UserId)
+	end)
+
+	if not success or not desc then return result end
+
+	local accessories = desc:GetAccessories(true)
+	local scanCount = math.min(#accessories, MAX_ITEMS_TO_SCAN)
+	result.totalItemsWorn = #accessories
+
+	for i = 1, scanCount do
+		local assetId = accessories[i].AssetId
+		local info = getAssetInfo(assetId)
+
+		if info then
+			result.totalWornValue += info.price
+
+			if info.price > result.highestItemValue then
+				result.highestItemValue = info.price
+				result.highestItemName = info.name
+			end
+
+			if info.price >= EXPENSIVE_ITEM_THRESHOLD then
+				result.expensiveItemsOwned += 1
+			end
+
+			if info.isLimited then
+				result.limitedCount += 1
+			end
+
+			if info.isLimitedUnique then
+				result.limitedUniqueCount += 1
+			end
+
+			if info.isRobloxCreated then
+				result.robloxItemCount += 1
+			else
+				result.ugcItemCount += 1
+			end
+
+			table.insert(result.scannedItems, {
+				name = info.name,
+				price = info.price,
+				isLimited = info.isLimited
+			})
+		end
+		task.wait(ASSET_LOOKUP_DELAY)
+	end
+	return result
+end
+
+------------------------------------------------------------
+-- SOCIAL DATA
+------------------------------------------------------------
+local function getSocialData(player: Player)
+	local social = {
+		friendsCount = 0,
+		groupCount = 0,
+		highRankGroupCount = 0
+	}
+
+	-- Groups
+	local gSuccess, groups = pcall(function()
+		return GroupService:GetGroupsAsync(player.UserId)
+	end)
+	if gSuccess and groups then
+		social.groupCount = #groups
+		for _, group in ipairs(groups) do
+			if group.Rank and group.Rank > 200 then
+				social.highRankGroupCount += 1
+			end
+		end
+	end
+
+	-- Friends (limited pages)
+	local fSuccess, pages = pcall(function()
+		return Players:GetFriendsAsync(player.UserId)
+	end)
+	if fSuccess and pages then
+		local count = 0
+		local maxPages = 3
+		for _ = 1, maxPages do
+			local items = pages:GetCurrentPage()
+			count += #items
+			if pages.IsFinished then break end
+			local nextOk = pcall(function() pages:AdvanceToNextPageAsync() end)
+			if not nextOk then break end
+		end
+		social.friendsCount = count
+	end
+
+	return social
+end
+
+------------------------------------------------------------
+-- CORE ANALYSIS (ON JOIN)
+------------------------------------------------------------
+local function onPlayerAdded(player: Player)
+	task.spawn(function()
+		print("[PLAY3 Analytics] Analyzing player:", player.Name)
+
+		local avatarData = scanAvatar(player)
+		local socialData = getSocialData(player)
+		local deviceType = getDeviceType()
+
+		-- Build payload matching expected schema
+		local payload = {
+			gameId = tostring(game.GameId),
+			timestamp = DateTime.now():ToIsoDate(),
+			playerId = hashPlayerId(player.UserId),
+			eventType = "player_analysis",
+
+			account = {
+				isPremium = (player.MembershipType == Enum.MembershipType.Premium),
+				accountAgeDays = player.AccountAge,
+				locale = player.LocaleId or "en-us",
+				country = "Unknown", -- Not available from Roblox API
+				deviceType = deviceType
+			},
+
+			-- History: Placeholder - requires backend/datastore integration
+			history = {
+				previousVisits = 0,      -- TODO: Track in datastore
+				previousPurchases = 0,   -- TODO: Track in datastore
+				lifetimeSpend = 0,       -- TODO: Track in datastore
+				totalSessions = 0,       -- TODO: Track in datastore
+				highestCheckpoint = 0    -- TODO: Game-specific
+			},
+
+			social = socialData,
+
+			avatar = {
+				totalItemsWorn = avatarData.totalItemsWorn,
+				totalWornValue = avatarData.totalWornValue,
+				highestItemValue = avatarData.highestItemValue,
+				highestItemName = avatarData.highestItemName,
+				limitedCount = avatarData.limitedCount,
+				limitedUniqueCount = avatarData.limitedUniqueCount,
+				robloxItemCount = avatarData.robloxItemCount,
+				ugcItemCount = avatarData.ugcItemCount,
+				expensiveItemsOwned = avatarData.expensiveItemsOwned
+			},
+
+			scannedItems = avatarData.scannedItems
+		}
+
+		addToQueue(payload)
+	end)
+end
+
+------------------------------------------------------------
+-- CONNECT
+------------------------------------------------------------
+Players.PlayerAdded:Connect(onPlayerAdded)
+
+-- Handle existing players
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(onPlayerAdded, player)
+end
+
+print("[PLAY3 Analytics] Player analyzer ready")]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    </Item>
+    </Item>
+    
+    <Item class="Folder" referent="RBX000003FE">
+      <Properties>
+        <string name="Name">PLAY3Client</string>
+      </Properties>
+      
+    <Item class="LocalScript" referent="RBX000003F8">
+      <Properties>
+        <string name="Name">OfferUI</string>
+        <ProtectedString name="Source"><![CDATA[--[[
+	PLAY3 SDK - Offer UI (Client)
+	Responsive popup UI that scales for mobile and desktop
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+-- Don't run in edit mode (Studio without game running)
+if not RunService:IsRunning() then
+	return
+end
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Detect mobile
+local function isMobile()
+	local success, result = pcall(function()
+		return GuiService:IsTenFootInterface() == false and
+			(game:GetService("UserInputService").TouchEnabled and
+			 not game:GetService("UserInputService").KeyboardEnabled)
+	end)
+	return success and result
+end
+
+local IS_MOBILE = isMobile()
+
+-- Wait for remotes with retry
+local function getRemotes()
+	local remotesFolder = ReplicatedStorage:WaitForChild("PLAY3Remotes", 30)
+	if not remotesFolder then
+		remotesFolder = ReplicatedStorage:FindFirstChild("PLAY3Remotes")
+		if not remotesFolder then
+			warn("[PLAY3] Could not find PLAY3Remotes folder after 30s - server may not be initialized")
+			return nil, nil
+		end
+	end
+
+	local showOffer = remotesFolder:WaitForChild("ShowOffer", 30)
+	if not showOffer then
+		warn("[PLAY3] Could not find ShowOffer remote")
+		return nil, nil
+	end
+
+	local offerResult = remotesFolder:FindFirstChild("OfferResult")
+	if not offerResult then
+		offerResult = remotesFolder:WaitForChild("OfferResult", 5)
+	end
+
+	return showOffer, offerResult
+end
+
+local showOfferEvent, offerResultEvent = getRemotes()
+if not showOfferEvent then
+	return
+end
+
+-- Sizing based on device
+local POPUP_WIDTH = IS_MOBILE and 0.85 or 0.3  -- 85% on mobile, 30% on desktop
+local POPUP_MAX_WIDTH = 400
+local POPUP_HEIGHT = IS_MOBILE and 0.35 or 0.3  -- Slightly taller on mobile
+local PADDING = IS_MOBILE and 16 or 20
+local TITLE_SIZE = IS_MOBILE and 18 or 20
+local PRODUCT_SIZE = IS_MOBILE and 22 or 26
+local MESSAGE_SIZE = IS_MOBILE and 14 or 16
+local PRICE_SIZE = IS_MOBILE and 20 or 24
+local BUTTON_TEXT_SIZE = IS_MOBILE and 16 or 18
+local BUTTON_HEIGHT = IS_MOBILE and 44 or 40
+
+-- Create the UI
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "PLAY3OfferUI"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+-- Background overlay
+local overlay = Instance.new("Frame")
+overlay.Name = "Overlay"
+overlay.Size = UDim2.new(1, 0, 1, 0)
+overlay.BackgroundColor3 = Color3.new(0, 0, 0)
+overlay.BackgroundTransparency = 1
+overlay.ZIndex = 100
+overlay.Parent = screenGui
+
+-- Main popup frame - centered with scale sizing
+local popup = Instance.new("Frame")
+popup.Name = "Popup"
+popup.AnchorPoint = Vector2.new(0.5, 0.5)
+popup.Position = UDim2.new(0.5, 0, 0.5, 0)
+popup.Size = UDim2.new(POPUP_WIDTH, 0, POPUP_HEIGHT, 0)
+popup.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+popup.BorderSizePixel = 0
+popup.Visible = false
+popup.ZIndex = 101
+popup.Parent = screenGui
+
+-- Constrain max width
+local sizeConstraint = Instance.new("UISizeConstraint")
+sizeConstraint.MaxSize = Vector2.new(POPUP_MAX_WIDTH, 300)
+sizeConstraint.Parent = popup
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 16)
+corner.Parent = popup
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(80, 120, 255)
+stroke.Thickness = 2
+stroke.Parent = popup
+
+-- Add padding
+local uiPadding = Instance.new("UIPadding")
+uiPadding.PaddingTop = UDim.new(0, PADDING)
+uiPadding.PaddingBottom = UDim.new(0, PADDING)
+uiPadding.PaddingLeft = UDim.new(0, PADDING)
+uiPadding.PaddingRight = UDim.new(0, PADDING)
+uiPadding.Parent = popup
+
+-- Layout for content
+local layout = Instance.new("UIListLayout")
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Padding = UDim.new(0, 8)
+layout.Parent = popup
+
+-- Title - "Limited Time Offer"
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.Size = UDim2.new(1, 0, 0, TITLE_SIZE + 4)
+title.BackgroundTransparency = 1
+title.Text = "Limited Time Offer"
+title.TextColor3 = Color3.fromRGB(80, 180, 255)
+title.TextSize = TITLE_SIZE
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Center
+title.LayoutOrder = 1
+title.Parent = popup
+
+-- Product name
+local productName = Instance.new("TextLabel")
+productName.Name = "ProductName"
+productName.Size = UDim2.new(1, 0, 0, PRODUCT_SIZE + 8)
+productName.BackgroundTransparency = 1
+productName.Text = "Product Name"
+productName.TextColor3 = Color3.new(1, 1, 1)
+productName.TextSize = PRODUCT_SIZE
+productName.Font = Enum.Font.GothamBold
+productName.TextXAlignment = Enum.TextXAlignment.Center
+productName.TextTruncate = Enum.TextTruncate.AtEnd
+productName.LayoutOrder = 2
+productName.Parent = popup
+
+-- Message
+local message = Instance.new("TextLabel")
+message.Name = "Message"
+message.Size = UDim2.new(1, 0, 0, MESSAGE_SIZE * 2 + 8)
+message.BackgroundTransparency = 1
+message.Text = "Limited time offer just for you!"
+message.TextColor3 = Color3.fromRGB(180, 180, 180)
+message.TextSize = MESSAGE_SIZE
+message.Font = Enum.Font.Gotham
+message.TextXAlignment = Enum.TextXAlignment.Center
+message.TextWrapped = true
+message.LayoutOrder = 3
+message.Parent = popup
+
+-- Price
+local price = Instance.new("TextLabel")
+price.Name = "Price"
+price.Size = UDim2.new(1, 0, 0, PRICE_SIZE + 8)
+price.BackgroundTransparency = 1
+price.Text = "R$ 99"
+price.TextColor3 = Color3.fromRGB(0, 220, 100)
+price.TextSize = PRICE_SIZE
+price.Font = Enum.Font.GothamBold
+price.TextXAlignment = Enum.TextXAlignment.Center
+price.LayoutOrder = 4
+price.Parent = popup
+
+-- Button container
+local buttonContainer = Instance.new("Frame")
+buttonContainer.Name = "Buttons"
+buttonContainer.Size = UDim2.new(1, 0, 0, BUTTON_HEIGHT)
+buttonContainer.BackgroundTransparency = 1
+buttonContainer.LayoutOrder = 5
+buttonContainer.Parent = popup
+
+local buttonLayout = Instance.new("UIListLayout")
+buttonLayout.FillDirection = Enum.FillDirection.Horizontal
+buttonLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+buttonLayout.Padding = UDim.new(0, 12)
+buttonLayout.Parent = buttonContainer
+
+-- Buy button
+local buyBtn = Instance.new("TextButton")
+buyBtn.Name = "BuyButton"
+buyBtn.Size = UDim2.new(0.45, 0, 1, 0)
+buyBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 80)
+buyBtn.Text = "Buy Now"
+buyBtn.TextColor3 = Color3.new(1, 1, 1)
+buyBtn.TextSize = BUTTON_TEXT_SIZE
+buyBtn.Font = Enum.Font.GothamBold
+buyBtn.AutoButtonColor = true
+buyBtn.Parent = buttonContainer
+
+local buyCorner = Instance.new("UICorner")
+buyCorner.CornerRadius = UDim.new(0, 8)
+buyCorner.Parent = buyBtn
+
+-- Dismiss button
+local dismissBtn = Instance.new("TextButton")
+dismissBtn.Name = "DismissButton"
+dismissBtn.Size = UDim2.new(0.45, 0, 1, 0)
+dismissBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+dismissBtn.Text = "No Thanks"
+dismissBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+dismissBtn.TextSize = BUTTON_TEXT_SIZE
+dismissBtn.Font = Enum.Font.GothamBold
+dismissBtn.AutoButtonColor = true
+dismissBtn.Parent = buttonContainer
+
+local dismissCorner = Instance.new("UICorner")
+dismissCorner.CornerRadius = UDim.new(0, 8)
+dismissCorner.Parent = dismissBtn
+
+-- Current offer tracking
+local currentOffer = nil
+local fullSize = popup.Size
+
+-- Show popup
+local function showPopup(offer)
+	currentOffer = offer
+
+	productName.Text = offer.name or "Special Item"
+	message.Text = offer.message or "Limited time offer just for you!"
+	price.Text = "R$ " .. (offer.price or "??")
+
+	overlay.BackgroundTransparency = 1
+	popup.Visible = true
+	popup.Size = UDim2.new(fullSize.X.Scale, fullSize.X.Offset, 0, 0)
+
+	-- Animate in
+	local overlayTween = TweenService:Create(overlay, TweenInfo.new(0.3), {BackgroundTransparency = 0.6})
+	local popupTween = TweenService:Create(popup, TweenInfo.new(0.3, Enum.EasingStyle.Back), {Size = fullSize})
+
+	overlayTween:Play()
+	popupTween:Play()
+end
+
+-- Hide popup (optionally send result to server)
+local function hidePopup(sendResult)
+	if not currentOffer then return end
+
+	local offer = currentOffer
+	currentOffer = nil
+
+	-- Animate out
+	local overlayTween = TweenService:Create(overlay, TweenInfo.new(0.2), {BackgroundTransparency = 1})
+	local popupTween = TweenService:Create(popup, TweenInfo.new(0.2), {Size = UDim2.new(fullSize.X.Scale, fullSize.X.Offset, 0, 0)})
+
+	overlayTween:Play()
+	popupTween:Play()
+
+	popupTween.Completed:Connect(function()
+		popup.Visible = false
+	end)
+
+	-- Only send "dismissed" to server - "purchased" is handled by ProcessReceipt
+	if sendResult and offerResultEvent then
+		offerResultEvent:FireServer(offer.promptId, "dismissed")
+	end
+end
+
+-- Buy button: prompt actual Roblox purchase
+buyBtn.MouseButton1Click:Connect(function()
+	if currentOffer and currentOffer.productId then
+		-- Prompt the real Roblox purchase dialog
+		MarketplaceService:PromptProductPurchase(player, currentOffer.productId)
+	end
+	-- Hide popup without sending result (ProcessReceipt handles purchase tracking)
+	hidePopup(false)
+end)
+
+-- Dismiss button: tell server player dismissed
+dismissBtn.MouseButton1Click:Connect(function()
+	hidePopup(true)  -- Send "dismissed" to server
+end)
+
+-- Tapping overlay dismisses
+overlay.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		hidePopup(true)  -- Send "dismissed" to server
+	end
+end)
+
+-- Listen for offers from server
+showOfferEvent.OnClientEvent:Connect(function(offer)
+	showPopup(offer)
+end)
+
+print("[PLAY3] Offer UI ready (mobile:", IS_MOBILE, ")")]]></ProtectedString>
+      </Properties>
+      
+    </Item>
+    </Item>
+    
+    <Item class="Folder" referent="RBX000003FF">
+      <Properties>
+        <string name="Name">PLAY3Remotes</string>
+      </Properties>
+      
+    <Item class="RemoteEvent" referent="RBX000003F9">
+      <Properties>
+        <string name="Name">DeviceInfo</string>
+      </Properties>
+    </Item>
+    <Item class="RemoteEvent" referent="RBX000003FA">
+      <Properties>
+        <string name="Name">ShowOffer</string>
+      </Properties>
+    </Item>
+    <Item class="RemoteEvent" referent="RBX000003FB">
+      <Properties>
+        <string name="Name">OfferResult</string>
+      </Properties>
+    </Item>
+    </Item>
+  </Item>
+</roblox>
