@@ -1,1 +1,1 @@
-{"version":"5.0.0","changelog":"SDK refactored for GitHub-based updates"}
+{"version":"5.0.1","changelog":"Unified hashing to SHA256 via HashLib"}
