@@ -18,6 +18,7 @@ if not RunService:IsRunning() then
 end
 
 local Config = require(script.Parent.Parent.Config)
+local HashLib = require(script.Parent.PLAY3_Analytics.HashLib)
 
 ------------------------------------------------------------
 -- CONFIGURATION
@@ -38,15 +39,10 @@ local requestQueue = {}
 local isProcessingQueue = false
 
 ------------------------------------------------------------
--- SIMPLE HASH (for playerId obfuscation)
+-- HASH (for playerId obfuscation using SHA256)
 ------------------------------------------------------------
 local function hashPlayerId(userId: number): string
-	local str = tostring(userId)
-	local hash = 0
-	for i = 1, #str do
-		hash = (hash * 31 + string.byte(str, i)) % 2147483647
-	end
-	return string.format("%x%x%x", hash, hash * 7 % 2147483647, hash * 13 % 2147483647)
+	return HashLib.sha256(tostring(userId))
 end
 
 ------------------------------------------------------------

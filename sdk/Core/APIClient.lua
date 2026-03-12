@@ -6,6 +6,8 @@
 
 local HttpService = game:GetService("HttpService")
 
+local HashLib = require(script.Parent.Parent.Analytics.PLAY3_Analytics.HashLib)
+
 local APIClient = {}
 APIClient.__index = APIClient
 
@@ -23,16 +25,10 @@ local BATCH_INTERVAL = 5 -- Flush every 5 seconds
 local BATCH_MAX_SIZE = 20 -- Flush when queue reaches this size
 
 --[[
-	Simple hash function for player ID obfuscation
-	Note: For production, consider using a proper SHA256 library
+	Hash player ID using SHA256 for consistent obfuscation
 ]]
 local function hashPlayerId(playerId)
-	local str = tostring(playerId)
-	local hash = 0
-	for i = 1, #str do
-		hash = (hash * 31 + string.byte(str, i)) % 2147483647
-	end
-	return string.format("%016x%016x%016x%016x", hash, hash * 7, hash * 13, hash * 17)
+	return HashLib.sha256(tostring(playerId))
 end
 
 --[[
