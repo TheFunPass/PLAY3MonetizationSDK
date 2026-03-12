@@ -14,6 +14,17 @@
 	3. SDK is installed with API key pre-configured
 ]]
 
+-- Only run as a plugin
+if not plugin then
+	return
+end
+
+-- Prevent double execution (Studio sometimes runs in multiple contexts)
+local RunService = game:GetService("RunService")
+if RunService:IsClient() then
+	return
+end
+
 local ServerScriptService = game:GetService("ServerScriptService")
 local StarterPlayer = game:GetService("StarterPlayer")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -22,7 +33,7 @@ local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
-local PLUGIN_VERSION = "4.3.1"
+local PLUGIN_VERSION = "4.3.2"
 
 -- Remote version check URL (GitHub raw)
 local VERSION_URL = "https://raw.githubusercontent.com/TheFunPass/PLAY3MonetizationSDK/main/version.json"

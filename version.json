@@ -1,1 +1,1 @@
-{"version":"4.3.1","changelog":"Fix embedded scripts auto-executing from plugin"}
+{"version":"4.3.2","changelog":"Prevent double execution in Studio"}
