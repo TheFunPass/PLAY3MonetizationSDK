@@ -1,0 +1,322 @@
+--[[
+	PLAY3 SDK - Profile Collector
+	Collects player profile data (Roblox data, avatar, social)
+]]
+
+local Players = game:GetService("Players")
+local GroupService = game:GetService("GroupService")
+local HttpService = game:GetService("HttpService")
+
+local ProfileCollector = {}
+ProfileCollector.__index = ProfileCollector
+
+local playerProfiles = {}
+
+-- Global asset value cache (shared across all players)
+local assetValueCache = {}
+local CACHE_DURATION = 3600 -- 1 hour cache for asset values
+local lastApiCall = 0
+local API_COOLDOWN = 1 -- Minimum 1 second between API calls
+
+function ProfileCollector.new(config)
+	local self = setmetatable({}, ProfileCollector)
+	self.config = config
+	return self
+end
+
+function ProfileCollector:init()
+	-- Profile data is collected on player join
+end
+
+function ProfileCollector:loadProfile(player)
+	task.spawn(function()
+		local profile = {
+			isPremium = player.MembershipType == Enum.MembershipType.Premium,
+			accountAgeDays = player.AccountAge,
+			locale = player.LocaleId or "en-us",
+			verifiedAgeBracket = "unknown",
+		}
+
+		-- Get groups
+		local groups = self:getGroups(player)
+		profile.groupCount = #groups
+		profile.highRankGroupCount = 0
+		for _, group in ipairs(groups) do
+			if group.Rank and group.Rank > 200 then
+				profile.highRankGroupCount += 1
+			end
+		end
+
+		-- Get friends count
+		profile.friendsCount = self:getFriendsCount(player)
+
+		-- Get avatar data (with real values from API)
+		local avatar = self:getAvatarData(player)
+		profile.avatarTotalValue = avatar.totalValue
+		profile.avatarLimitedCount = avatar.limitedCount
+		profile.avatarHighestItem = avatar.highestValue
+		profile.avatarAccessoryCount = avatar.accessoryCount
+
+		-- Party detection (basic - checks for friends in same server)
+		local partyInfo = self:detectParty(player)
+		profile.isInParty = partyInfo.isInParty
+		profile.partySize = partyInfo.partySize
+
+		playerProfiles[player.UserId] = profile
+	end)
+end
+
+function ProfileCollector:getGroups(player)
+	local success, groups = pcall(function()
+		return GroupService:GetGroupsAsync(player.UserId)
+	end)
+
+	if success then
+		return groups
+	end
+	return {}
+end
+
+function ProfileCollector:getFriendsCount(player)
+	local success, pages = pcall(function()
+		return Players:GetFriendsAsync(player.UserId)
+	end)
+
+	if not success then return 0 end
+
+	local count = 0
+	local maxPages = 5 -- Limit to avoid timeout
+	local pageNum = 0
+
+	while pageNum < maxPages do
+		local items = pages:GetCurrentPage()
+		count += #items
+
+		if pages.IsFinished then break end
+
+		local nextSuccess = pcall(function()
+			pages:AdvanceToNextPageAsync()
+		end)
+
+		if not nextSuccess then break end
+		pageNum += 1
+	end
+
+	return count
+end
+
+--[[
+	Get avatar data with real values from Roblox Catalog API
+	Uses batching and caching to minimize API calls
+]]
+function ProfileCollector:getAvatarData(player)
+	local result = {
+		totalValue = 0,
+		limitedCount = 0,
+		highestValue = 0,
+		accessoryCount = 0,
+	}
+
+	-- Get HumanoidDescription
+	local success, description = pcall(function()
+		return Players:GetHumanoidDescriptionFromUserId(player.UserId)
+	end)
+
+	if not success or not description then
+		return result
+	end
+
+	-- Collect all asset IDs from avatar
+	local assetIds = {}
+	local accessoryDescriptions = description:GetAccessories(false)
+	for _, acc in ipairs(accessoryDescriptions) do
+		if acc.AssetId and acc.AssetId > 0 then
+			table.insert(assetIds, acc.AssetId)
+		end
+	end
+
+	result.accessoryCount = #assetIds
+
+	if #assetIds == 0 then
+		return result
+	end
+
+	-- Check which assets need lookup (not in cache or expired)
+	local uncachedIds = {}
+	local now = tick()
+
+	for _, assetId in ipairs(assetIds) do
+		local cached = assetValueCache[assetId]
+		if not cached or (now - cached.timestamp) > CACHE_DURATION then
+			table.insert(uncachedIds, assetId)
+		end
+	end
+
+	-- Fetch uncached assets from API (batched)
+	if #uncachedIds > 0 then
+		self:fetchAssetValues(uncachedIds)
+	end
+
+	-- Calculate totals from cache
+	for _, assetId in ipairs(assetIds) do
+		local cached = assetValueCache[assetId]
+		if cached then
+			local value = cached.price or 0
+			result.totalValue += value
+
+			if cached.isLimited then
+				result.limitedCount += 1
+				-- For limiteds, use resale price if available
+				if cached.lowestResalePrice and cached.lowestResalePrice > value then
+					result.totalValue += (cached.lowestResalePrice - value)
+					value = cached.lowestResalePrice
+				end
+			end
+
+			if value > result.highestValue then
+				result.highestValue = value
+			end
+		end
+	end
+
+	return result
+end
+
+--[[
+	Fetch asset values from Roblox Catalog API
+	Batches up to 120 items per request
+]]
+function ProfileCollector:fetchAssetValues(assetIds)
+	-- Rate limit
+	local now = tick()
+	if (now - lastApiCall) < API_COOLDOWN then
+		task.wait(API_COOLDOWN - (now - lastApiCall))
+	end
+	lastApiCall = tick()
+
+	-- Batch into chunks of 120 (API limit)
+	local BATCH_SIZE = 120
+
+	for i = 1, #assetIds, BATCH_SIZE do
+		local batch = {}
+		for j = i, math.min(i + BATCH_SIZE - 1, #assetIds) do
+			table.insert(batch, {
+				itemType = "Asset",
+				id = assetIds[j],
+			})
+		end
+
+		local success, response = pcall(function()
+			return HttpService:RequestAsync({
+				Url = "https://catalog.roblox.com/v1/catalog/items/details",
+				Method = "POST",
+				Headers = {
+					["Content-Type"] = "application/json",
+				},
+				Body = HttpService:JSONEncode({ items = batch }),
+			})
+		end)
+
+		if success and response.StatusCode == 200 then
+			local decodeSuccess, data = pcall(function()
+				return HttpService:JSONDecode(response.Body)
+			end)
+
+			if decodeSuccess and data and data.data then
+				for _, item in ipairs(data.data) do
+					assetValueCache[item.id] = {
+						price = item.price or item.lowestPrice or 0,
+						isLimited = item.itemRestrictions and table.find(item.itemRestrictions, "Limited") ~= nil,
+						lowestResalePrice = item.lowestResalePrice,
+						timestamp = tick(),
+					}
+				end
+			end
+		else
+			-- API failed - cache zeros to avoid repeated failures
+			for _, entry in ipairs(batch) do
+				if not assetValueCache[entry.id] then
+					assetValueCache[entry.id] = {
+						price = 0,
+						isLimited = false,
+						timestamp = tick(),
+					}
+				end
+			end
+		end
+
+		-- Cooldown between batches
+		if i + BATCH_SIZE <= #assetIds then
+			task.wait(API_COOLDOWN)
+		end
+	end
+end
+
+--[[
+	Detect if player is in a party (friends in same server)
+]]
+function ProfileCollector:detectParty(player)
+	local result = {
+		isInParty = false,
+		partySize = 0,
+	}
+
+	-- Get player's friends
+	local friendIds = {}
+	local success, pages = pcall(function()
+		return Players:GetFriendsAsync(player.UserId)
+	end)
+
+	if not success then return result end
+
+	-- Collect friend IDs (first page only for speed)
+	local items = pages:GetCurrentPage()
+	for _, friend in ipairs(items) do
+		friendIds[friend.Id] = true
+	end
+
+	-- Check if any friends are in the same server
+	local friendsInServer = 0
+	for _, otherPlayer in ipairs(Players:GetPlayers()) do
+		if otherPlayer ~= player and friendIds[otherPlayer.UserId] then
+			friendsInServer += 1
+		end
+	end
+
+	if friendsInServer > 0 then
+		result.isInParty = true
+		result.partySize = friendsInServer + 1 -- Include the player
+	end
+
+	return result
+end
+
+function ProfileCollector:collect(player)
+	local profile = playerProfiles[player.UserId]
+
+	if profile then
+		return profile
+	else
+		return {
+			isPremium = player.MembershipType == Enum.MembershipType.Premium,
+			accountAgeDays = player.AccountAge,
+			locale = player.LocaleId or "en-us",
+			verifiedAgeBracket = "unknown",
+			groupCount = 0,
+			highRankGroupCount = 0,
+			friendsCount = 0,
+			avatarTotalValue = 0,
+			avatarLimitedCount = 0,
+			avatarHighestItem = 0,
+			avatarAccessoryCount = 0,
+			isInParty = false,
+			partySize = 0,
+		}
+	end
+end
+
+function ProfileCollector:clearPlayer(player)
+	playerProfiles[player.UserId] = nil
+end
+
+return ProfileCollector
