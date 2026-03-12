@@ -22,7 +22,7 @@ local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
-local PLUGIN_VERSION = "4.3.0"
+local PLUGIN_VERSION = "4.3.1"
 
 -- Remote version check URL (GitHub raw)
 local VERSION_URL = "https://raw.githubusercontent.com/TheFunPass/PLAY3MonetizationSDK/main/version.json"
@@ -829,6 +829,23 @@ local function installSDK()
 	if EmbeddedRemotes then
 		local newRemotes = EmbeddedRemotes:Clone()
 		newRemotes.Parent = ReplicatedStorage
+	end
+
+	-- Enable scripts after installation (they are disabled in plugin to prevent auto-execution)
+	for _, desc in newSDK:GetDescendants() do
+		if desc:IsA("Script") or desc:IsA("LocalScript") then
+			desc.Disabled = false
+		end
+	end
+	if sps then
+		local clientFolder = sps:FindFirstChild("PLAY3Client")
+		if clientFolder then
+			for _, desc in clientFolder:GetDescendants() do
+				if desc:IsA("LocalScript") then
+					desc.Disabled = false
+				end
+			end
+		end
 	end
 
 	ChangeHistoryService:SetWaypoint("After PLAY3 SDK Install")
@@ -3552,6 +3569,7 @@ return DeviceCollector]]></ProtectedString>
       
     <Item class="Script" referent="RBX000003F5">
       <Properties>
+        <bool name="Disabled">true</bool>
         <string name="Name">PLAY3_Analytics</string>
         <ProtectedString name="Source"><![CDATA[local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -5153,6 +5171,7 @@ return Base64]]></ProtectedString>
     </Item>
     <Item class="Script" referent="RBX000003F6">
       <Properties>
+        <bool name="Disabled">true</bool>
         <string name="Name">Profileanalyzer</string>
         <ProtectedString name="Source"><![CDATA[--!strict
 --[[
@@ -5467,6 +5486,7 @@ print("[PLAY3 Analytics] Player analyzer ready")]]></ProtectedString>
       
     <Item class="LocalScript" referent="RBX000003F8">
       <Properties>
+        <bool name="Disabled">true</bool>
         <string name="Name">OfferUI</string>
         <ProtectedString name="Source"><![CDATA[--[[
 	PLAY3 SDK - Offer UI (Client)

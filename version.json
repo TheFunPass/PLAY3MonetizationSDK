@@ -1,4 +1,1 @@
-{
-  "version": "4.3.0",
-  "changelog": "Tabbed UI, API key persistence"
-}
+{"version":"4.3.1","changelog":"Fix embedded scripts auto-executing from plugin"}
