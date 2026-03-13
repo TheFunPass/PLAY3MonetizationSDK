@@ -38,6 +38,7 @@ function SessionCollector:startSession(player, storedData)
 		offersShown = 0,
 		offersDismissed = 0,
 		purchasesMade = 0,
+		sessionSpendRobux = 0, -- Track total spend this session
 		-- NEW: Track last offer timing and result
 		lastOfferTime = nil,
 		lastOfferResult = "none",
@@ -63,10 +64,11 @@ function SessionCollector:recordOfferDismissed(player)
 	end
 end
 
-function SessionCollector:recordPurchase(player)
+function SessionCollector:recordPurchase(player, priceRobux)
 	local session = playerSessions[player.UserId]
 	if session then
 		session.purchasesMade += 1
+		session.sessionSpendRobux += (priceRobux or 0)
 		session.lastOfferResult = "purchased"
 	end
 end
@@ -95,15 +97,19 @@ function SessionCollector:collect(player)
 			dismissRate = session.offersDismissed / session.offersShown
 		end
 
+		-- Calculate session duration
+		local sessionDurationSec = math.floor(tick() - session.startTime)
+
 		return {
 			sessionId = session.sessionId,
 			sessionNumber = session.sessionNumber,
-			sessionDurationSec = math.floor(tick() - session.startTime),
+			sessionDurationSec = sessionDurationSec,
 			isFirstSession = session.isFirstSession,
 			daysSinceLastSession = session.daysSinceLastSession,
 			offersShown = session.offersShown,
 			offersDismissed = session.offersDismissed,
 			purchasesMade = session.purchasesMade,
+			sessionSpendRobux = session.sessionSpendRobux or 0,
 			-- Offer timing context for AI learning
 			lastOfferResult = session.lastOfferResult,
 			lastOfferPromptId = session.lastOfferPromptId,
@@ -120,6 +126,7 @@ function SessionCollector:collect(player)
 			offersShown = 0,
 			offersDismissed = 0,
 			purchasesMade = 0,
+			sessionSpendRobux = 0,
 			lastOfferResult = "none",
 			lastOfferPromptId = nil,
 			secondsSinceLastOffer = nil,

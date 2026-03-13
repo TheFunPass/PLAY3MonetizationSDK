@@ -6,6 +6,8 @@
 local Players = game:GetService("Players")
 local GroupService = game:GetService("GroupService")
 local HttpService = game:GetService("HttpService")
+local LocalizationService = game:GetService("LocalizationService")
+local PolicyService = game:GetService("PolicyService")
 
 local ProfileCollector = {}
 ProfileCollector.__index = ProfileCollector
@@ -30,11 +32,51 @@ end
 
 function ProfileCollector:loadProfile(player)
 	task.spawn(function()
+		-- Get age bracket from Player.AgeBracket enum
+		local ageBracket = "unknown"
+		if player.AgeBracket == Enum.AgeBracket.AgeUnder13 then
+			ageBracket = "Under13"
+		elseif player.AgeBracket == Enum.AgeBracket.Age13OrOver then
+			ageBracket = "13+"
+		end
+
+		-- Get country code (Amendment PA-2026-001)
+		local country = "unknown"
+		pcall(function()
+			country = LocalizationService:GetCountryRegionForPlayerAsync(player)
+		end)
+
+		-- Get policy signals (Amendment PA-2026-001)
+		local policySignals = {}
+		pcall(function()
+			local policyInfo = PolicyService:GetPolicyInfoForPlayerAsync(player)
+			policySignals = {
+				ArePaidRandomItemsRestricted = policyInfo.ArePaidRandomItemsRestricted or false,
+				IsPaidItemTradingAllowed = policyInfo.IsPaidItemTradingAllowed or false,
+				IsSubjectToChinaPolicies = policyInfo.IsSubjectToChinaPolicies or false,
+			}
+		end)
+
+		-- Get network ping (Amendment PA-2026-001)
+		local pingMs = 0
+		pcall(function()
+			pingMs = math.floor(player:GetNetworkPing() * 1000) -- Convert to ms
+		end)
+
+		-- Check if VIP server (Amendment PA-2026-001)
+		local isVIPServer = game.PrivateServerId ~= "" and game.PrivateServerId ~= nil
+
 		local profile = {
 			isPremium = player.MembershipType == Enum.MembershipType.Premium,
 			accountAgeDays = player.AccountAge,
 			locale = player.LocaleId or "en-us",
-			verifiedAgeBracket = "unknown",
+			ageBracket = ageBracket,
+			-- Amendment PA-2026-001 fields
+			country = country,
+			hasVerifiedBadge = player.HasVerifiedBadge or false,
+			pingMs = pingMs,
+			isVIPServer = isVIPServer,
+			policySignals = policySignals,
 		}
 
 		-- Get groups
@@ -297,11 +339,24 @@ function ProfileCollector:collect(player)
 	if profile then
 		return profile
 	else
+		-- Get age bracket from Player.AgeBracket enum
+		local ageBracket = "unknown"
+		if player.AgeBracket == Enum.AgeBracket.AgeUnder13 then
+			ageBracket = "Under13"
+		elseif player.AgeBracket == Enum.AgeBracket.Age13OrOver then
+			ageBracket = "13+"
+		end
+
 		return {
 			isPremium = player.MembershipType == Enum.MembershipType.Premium,
 			accountAgeDays = player.AccountAge,
 			locale = player.LocaleId or "en-us",
-			verifiedAgeBracket = "unknown",
+			ageBracket = ageBracket,
+			country = "unknown",
+			hasVerifiedBadge = player.HasVerifiedBadge or false,
+			pingMs = 0,
+			isVIPServer = game.PrivateServerId ~= "" and game.PrivateServerId ~= nil,
+			policySignals = {},
 			groupCount = 0,
 			highRankGroupCount = 0,
 			friendsCount = 0,

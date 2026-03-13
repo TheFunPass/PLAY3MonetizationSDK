@@ -1,1 +1,1 @@
-{"version":"5.0.2","changelog":"Updated to new roblox-events API format"}
+{"version":"5.0.3","changelog":"Amendment PA-2026-001: Added country, hasVerifiedBadge, policySignals, pingMs, isVIPServer; Enhanced SignalBuilder with ageGroup mapping and segment calculation"}

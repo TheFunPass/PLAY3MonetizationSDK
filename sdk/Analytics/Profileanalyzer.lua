@@ -11,6 +11,8 @@ local GroupService = game:GetService("GroupService")
 local HttpService = game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local LocalizationService = game:GetService("LocalizationService")
+local PolicyService = game:GetService("PolicyService")
 
 -- Don't run in edit mode
 if not RunService:IsRunning() then
@@ -238,6 +240,42 @@ local function onPlayerAdded(player: Player)
 		local socialData = getSocialData(player)
 		local deviceType = getDeviceType()
 
+		-- Get age bracket from Player.AgeBracket enum
+		local ageBracket = "unknown"
+		if player.AgeBracket == Enum.AgeBracket.AgeUnder13 then
+			ageBracket = "Under13"
+		elseif player.AgeBracket == Enum.AgeBracket.Age13OrOver then
+			ageBracket = "13+"
+		end
+
+		-- Amendment PA-2026-001: Get country code
+		local country = "unknown"
+		pcall(function()
+			country = LocalizationService:GetCountryRegionForPlayerAsync(player)
+		end)
+
+		-- Amendment PA-2026-001: Get policy signals
+		local policySignals = {
+			ArePaidRandomItemsRestricted = false,
+			IsPaidItemTradingAllowed = false,
+			IsSubjectToChinaPolicies = false,
+		}
+		pcall(function()
+			local policyInfo = PolicyService:GetPolicyInfoForPlayerAsync(player)
+			policySignals.ArePaidRandomItemsRestricted = policyInfo.ArePaidRandomItemsRestricted or false
+			policySignals.IsPaidItemTradingAllowed = policyInfo.IsPaidItemTradingAllowed or false
+			policySignals.IsSubjectToChinaPolicies = policyInfo.IsSubjectToChinaPolicies or false
+		end)
+
+		-- Amendment PA-2026-001: Get network ping
+		local pingMs = 0
+		pcall(function()
+			pingMs = math.floor(player:GetNetworkPing() * 1000) -- Convert to ms
+		end)
+
+		-- Amendment PA-2026-001: Check if VIP server
+		local isVIPServer = game.PrivateServerId ~= "" and game.PrivateServerId ~= nil
+
 		-- Build payload matching expected schema
 		local payload = {
 			gameId = tostring(game.GameId),
@@ -249,8 +287,14 @@ local function onPlayerAdded(player: Player)
 				isPremium = (player.MembershipType == Enum.MembershipType.Premium),
 				accountAgeDays = player.AccountAge,
 				locale = player.LocaleId or "en-us",
-				country = "Unknown", -- Not available from Roblox API
-				deviceType = deviceType
+				ageBracket = ageBracket,
+				deviceType = deviceType,
+				-- Amendment PA-2026-001 fields (nested in account for schema compatibility)
+				country = country,
+				hasVerifiedBadge = player.HasVerifiedBadge or false,
+				pingMs = pingMs,
+				isVIPServer = isVIPServer,
+				policySignals = policySignals,
 			},
 
 			-- History: Placeholder - requires backend/datastore integration

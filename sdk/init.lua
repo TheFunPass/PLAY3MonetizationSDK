@@ -576,7 +576,7 @@ function PLAY3:RecordResult(player, promptId, result)
 
 		if result == RESULT_PURCHASED then
 			self.decisionCache:recordConversion(offerData.stateAtOffer)
-			collectors.session:recordPurchase(player)
+			collectors.session:recordPurchase(player, offerData.price)
 
 			if debugEnabled then
 				local stats = self.decisionCache:getStats()
@@ -659,7 +659,7 @@ function PLAY3:_setupPurchaseTracking()
 				},
 			})
 
-			collectors.session:recordPurchase(player)
+			collectors.session:recordPurchase(player, 0) -- Natural purchase, price unknown
 		end
 	end)
 end
