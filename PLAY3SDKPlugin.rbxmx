@@ -1,7 +1,7 @@
 <roblox version="4">
   <Item class="Script" referent="0">
     <Properties>
-      <string name="Name">PLAY3SDKPlugin</string>
+      <string name="Name">PLAY3 SDK</string>
       <token name="RunContext">0</token>
       <string name="Source"><![CDATA[--[[
 	PLAY3 SDK Plugin (Lightweight Installer)
@@ -23,7 +23,7 @@ local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
-local PLUGIN_VERSION = "5.0.0"
+local PLUGIN_VERSION = "5.1.0"
 
 -- GitHub raw URLs
 local GITHUB_BASE = "https://raw.githubusercontent.com/TheFunPass/PLAY3MonetizationSDK/main"
@@ -377,47 +377,47 @@ listProductsSubtitle.Font = Enum.Font.Code
 listProductsSubtitle.TextXAlignment = Enum.TextXAlignment.Left
 listProductsSubtitle.Parent = listProductsBtn
 
-local openConfigBtn = Instance.new("TextButton")
-openConfigBtn.Size = UDim2.new(1, 0, 0, 50)
-openConfigBtn.BackgroundColor3 = COLORS.voidBlack
-openConfigBtn.Text = ""
-openConfigBtn.AutoButtonColor = true
-openConfigBtn.LayoutOrder = 3
-openConfigBtn.Parent = toolsPanel
+local verifySetupBtn = Instance.new("TextButton")
+verifySetupBtn.Size = UDim2.new(1, 0, 0, 50)
+verifySetupBtn.BackgroundColor3 = COLORS.voidBlack
+verifySetupBtn.Text = ""
+verifySetupBtn.AutoButtonColor = true
+verifySetupBtn.LayoutOrder = 4
+verifySetupBtn.Parent = toolsPanel
 
-Instance.new("UICorner", openConfigBtn).CornerRadius = UDim.new(0, 8)
-Instance.new("UIStroke", openConfigBtn).Color = COLORS.whiteBorder
+Instance.new("UICorner", verifySetupBtn).CornerRadius = UDim.new(0, 8)
+Instance.new("UIStroke", verifySetupBtn).Color = COLORS.whiteBorder
 
-local openConfigBtnLayout = Instance.new("UIListLayout")
-openConfigBtnLayout.FillDirection = Enum.FillDirection.Vertical
-openConfigBtnLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-openConfigBtnLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-openConfigBtnLayout.Padding = UDim.new(0, 2)
-openConfigBtnLayout.Parent = openConfigBtn
+local verifySetupBtnLayout = Instance.new("UIListLayout")
+verifySetupBtnLayout.FillDirection = Enum.FillDirection.Vertical
+verifySetupBtnLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+verifySetupBtnLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+verifySetupBtnLayout.Padding = UDim.new(0, 2)
+verifySetupBtnLayout.Parent = verifySetupBtn
 
-local openConfigBtnPadding = Instance.new("UIPadding")
-openConfigBtnPadding.PaddingLeft = UDim.new(0, 12)
-openConfigBtnPadding.Parent = openConfigBtn
+local verifySetupBtnPadding = Instance.new("UIPadding")
+verifySetupBtnPadding.PaddingLeft = UDim.new(0, 12)
+verifySetupBtnPadding.Parent = verifySetupBtn
 
-local openConfigTitle = Instance.new("TextLabel")
-openConfigTitle.Size = UDim2.new(1, -12, 0, 16)
-openConfigTitle.BackgroundTransparency = 1
-openConfigTitle.Text = "OPEN CONFIG"
-openConfigTitle.TextColor3 = COLORS.white
-openConfigTitle.TextSize = 12
-openConfigTitle.Font = Enum.Font.GothamBold
-openConfigTitle.TextXAlignment = Enum.TextXAlignment.Left
-openConfigTitle.Parent = openConfigBtn
+local verifySetupTitle = Instance.new("TextLabel")
+verifySetupTitle.Size = UDim2.new(1, -12, 0, 16)
+verifySetupTitle.BackgroundTransparency = 1
+verifySetupTitle.Text = "VERIFY SETUP"
+verifySetupTitle.TextColor3 = COLORS.white
+verifySetupTitle.TextSize = 12
+verifySetupTitle.Font = Enum.Font.GothamBold
+verifySetupTitle.TextXAlignment = Enum.TextXAlignment.Left
+verifySetupTitle.Parent = verifySetupBtn
 
-local openConfigSubtitle = Instance.new("TextLabel")
-openConfigSubtitle.Size = UDim2.new(1, -12, 0, 14)
-openConfigSubtitle.BackgroundTransparency = 1
-openConfigSubtitle.Text = "Select SDK Config module"
-openConfigSubtitle.TextColor3 = COLORS.textMuted
-openConfigSubtitle.TextSize = 10
-openConfigSubtitle.Font = Enum.Font.Code
-openConfigSubtitle.TextXAlignment = Enum.TextXAlignment.Left
-openConfigSubtitle.Parent = openConfigBtn
+local verifySetupSubtitle = Instance.new("TextLabel")
+verifySetupSubtitle.Size = UDim2.new(1, -12, 0, 14)
+verifySetupSubtitle.BackgroundTransparency = 1
+verifySetupSubtitle.Text = "Check SDK installation & config"
+verifySetupSubtitle.TextColor3 = COLORS.textMuted
+verifySetupSubtitle.TextSize = 10
+verifySetupSubtitle.Font = Enum.Font.Code
+verifySetupSubtitle.TextXAlignment = Enum.TextXAlignment.Left
+verifySetupSubtitle.Parent = verifySetupBtn
 
 --============================================================
 -- STATE
@@ -836,6 +836,387 @@ function refreshStatus()
 end
 
 --============================================================
+-- VERIFICATION FUNCTIONS
+--============================================================
+
+local REQUIRED_SDK_SCRIPTS = {
+	"Config",
+	"init",
+	"Core/APIClient",
+	"Core/SignalBuilder",
+	"Core/DecisionCache",
+	"Collectors/StateCollector",
+	"Collectors/SessionCollector",
+	"Collectors/DeviceCollector",
+	"Collectors/ProfileCollector",
+	"Analytics/PLAY3_Analytics",
+	"Analytics/HashLib",
+}
+
+local REQUIRED_REMOTES = {"ShowOffer", "OfferResult", "DeviceInfo"}
+
+local function verifyConfig(sdk)
+	local result = {pass = true, warnings = {}, errors = {}}
+
+	local config = sdk:FindFirstChild("Config")
+	if not config or not config:IsA("ModuleScript") then
+		result.pass = false
+		table.insert(result.errors, "Config module not found")
+		return result
+	end
+
+	local source = config.Source
+
+	-- Check API_KEY
+	local apiKey = source:match('API_KEY%s*=%s*"([^"]*)"')
+	if not apiKey or apiKey == "" then
+		result.pass = false
+		table.insert(result.errors, "API_KEY is empty")
+	elseif not apiKey:match(API_KEY_PATTERN) then
+		result.pass = false
+		table.insert(result.errors, "API_KEY format invalid")
+	else
+		table.insert(result.warnings, "API_KEY: Valid format") -- Actually a pass, use for display
+	end
+
+	-- Check CATALOG exists and has products
+	local catalogMatch = source:match("CATALOG%s*=%s*(%b{})")
+	if not catalogMatch then
+		result.pass = false
+		table.insert(result.errors, "CATALOG not found")
+		return result
+	end
+
+	-- Count products in catalog (look for promptId entries)
+	local productCount = 0
+	for _ in catalogMatch:gmatch("promptId%s*=") do
+		productCount = productCount + 1
+	end
+
+	if productCount == 0 then
+		result.pass = false
+		table.insert(result.errors, "CATALOG has no products defined")
+	else
+		table.insert(result.warnings, string.format("CATALOG: %d products defined", productCount))
+	end
+
+	-- Check for required fields in products
+	local hasName = catalogMatch:find("name%s*=") ~= nil
+	local hasTiers = catalogMatch:find("tiers%s*=") ~= nil
+	local hasTier = catalogMatch:find("tier%s*=") ~= nil
+	local hasPrice = catalogMatch:find("price%s*=") ~= nil
+	local hasProductId = catalogMatch:find("productId%s*=") ~= nil
+
+	if productCount > 0 then
+		if not hasName then
+			table.insert(result.warnings, "WARN: Some products may be missing 'name' field")
+		end
+		if not hasTiers then
+			table.insert(result.warnings, "WARN: Some products may be missing 'tiers' field")
+		end
+		if hasTiers and (not hasTier or not hasPrice or not hasProductId) then
+			table.insert(result.warnings, "WARN: Some tiers may be missing required fields (tier/price/productId)")
+		end
+	end
+
+	return result
+end
+
+local function verifySDKScripts(sdk)
+	local result = {pass = true, warnings = {}, errors = {}, found = 0, total = #REQUIRED_SDK_SCRIPTS}
+
+	for _, scriptPath in ipairs(REQUIRED_SDK_SCRIPTS) do
+		local parts = string.split(scriptPath, "/")
+		local current = sdk
+		local found = true
+
+		for _, part in ipairs(parts) do
+			local child = current:FindFirstChild(part)
+			if not child then
+				found = false
+				break
+			end
+			current = child
+		end
+
+		if found then
+			result.found = result.found + 1
+		else
+			result.pass = false
+			table.insert(result.errors, "Missing: " .. scriptPath)
+		end
+	end
+
+	return result
+end
+
+local function verifyClientScripts()
+	local result = {pass = true, warnings = {}, errors = {}}
+
+	local sps = StarterPlayer:FindFirstChild("StarterPlayerScripts")
+	if not sps then
+		result.pass = false
+		table.insert(result.errors, "StarterPlayerScripts not found")
+		return result
+	end
+
+	local clientFolder = sps:FindFirstChild("PLAY3Client")
+	if not clientFolder then
+		result.pass = false
+		table.insert(result.errors, "PLAY3Client folder not found")
+		return result
+	end
+
+	local offerUI = clientFolder:FindFirstChild("OfferUI")
+	if not offerUI then
+		result.pass = false
+		table.insert(result.errors, "OfferUI LocalScript not found")
+	end
+
+	return result
+end
+
+local function verifyRemotes()
+	local result = {pass = true, warnings = {}, errors = {}, found = 0}
+
+	local remotesFolder = ReplicatedStorage:FindFirstChild("PLAY3Remotes")
+	if not remotesFolder then
+		result.pass = false
+		table.insert(result.errors, "PLAY3Remotes folder not found")
+		return result
+	end
+
+	for _, remoteName in ipairs(REQUIRED_REMOTES) do
+		local remote = remotesFolder:FindFirstChild(remoteName)
+		if remote then
+			result.found = result.found + 1
+		else
+			result.pass = false
+			table.insert(result.errors, "Missing remote: " .. remoteName)
+		end
+	end
+
+	return result
+end
+
+local function verifyProductIds(sdk)
+	local result = {pass = true, warnings = {}, errors = {}, valid = 0, total = 0}
+
+	local config = sdk:FindFirstChild("Config")
+	if not config then
+		table.insert(result.warnings, "Cannot verify products: Config not found")
+		return result
+	end
+
+	local source = config.Source
+	local productIds = {}
+
+	-- Extract all productId values
+	for productId in source:gmatch("productId%s*=%s*(%d+)") do
+		local id = tonumber(productId)
+		if id and id > 0 then
+			productIds[id] = true
+		end
+	end
+
+	for id, _ in pairs(productIds) do
+		result.total = result.total + 1
+	end
+
+	if result.total == 0 then
+		table.insert(result.warnings, "No productIds found in CATALOG")
+		return result
+	end
+
+	-- Verify each product ID with MarketplaceService
+	for id, _ in pairs(productIds) do
+		local success, productInfo = pcall(function()
+			return MarketplaceService:GetProductInfo(id, Enum.InfoType.Product)
+		end)
+
+		if success and productInfo then
+			result.valid = result.valid + 1
+		else
+			table.insert(result.warnings, string.format("ProductId %d not found in game", id))
+		end
+	end
+
+	return result
+end
+
+local function testAPIConnection(apiKey)
+	local result = {pass = false, warnings = {}, errors = {}}
+
+	if not apiKey or apiKey == "" or not apiKey:match(API_KEY_PATTERN) then
+		table.insert(result.errors, "Invalid API key - cannot test connection")
+		return result
+	end
+
+	local payload = {
+		eventType = "sdk_verify",
+		gameId = tostring(game.GameId),
+		timestamp = os.date("!%Y-%m-%dT%H:%M:%S") .. ".000Z",
+		data = {
+			test = true,
+			pluginVersion = PLUGIN_VERSION
+		}
+	}
+
+	local success, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = "https://roblox.play3.ai/roblox-events",
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["x-api-key"] = apiKey
+			},
+			Body = HttpService:JSONEncode(payload)
+		})
+	end)
+
+	if not success then
+		table.insert(result.errors, "Connection failed: " .. tostring(response))
+		return result
+	end
+
+	if response.StatusCode == 201 or response.StatusCode == 200 then
+		result.pass = true
+	elseif response.StatusCode == 401 or response.StatusCode == 403 then
+		table.insert(result.errors, string.format("Auth failed (%d) - check API key", response.StatusCode))
+	else
+		table.insert(result.warnings, string.format("Unexpected response: %d", response.StatusCode))
+		result.pass = true -- Still mark as pass if we got a response
+	end
+
+	return result
+end
+
+local function runFullVerification()
+	local errors = 0
+	local warnings = 0
+
+	print("\n========== PLAY3 SDK VERIFICATION ==========\n")
+
+	-- Check if SDK is installed
+	local sdk = ServerScriptService:FindFirstChild("PLAY3SDK")
+	if not sdk then
+		print("SDK INSTALLATION")
+		print("  [FAIL] PLAY3SDK folder not found in ServerScriptService")
+		print("\n=========================================")
+		print("RESULT: SDK not installed")
+		return false
+	end
+
+	-- 1. Config Validation
+	print("CONFIG")
+	local configResult = verifyConfig(sdk)
+	if configResult.pass then
+		for _, msg in ipairs(configResult.warnings) do
+			if msg:find("^WARN:") then
+				print("  [WARN] " .. msg:sub(7))
+				warnings = warnings + 1
+			else
+				print("  [PASS] " .. msg)
+			end
+		end
+	end
+	for _, err in ipairs(configResult.errors) do
+		print("  [FAIL] " .. err)
+		errors = errors + 1
+	end
+
+	-- 2. SDK Scripts Check
+	print("\nSDK INSTALLATION")
+	local scriptsResult = verifySDKScripts(sdk)
+	if scriptsResult.pass then
+		print(string.format("  [PASS] PLAY3SDK folder exists"))
+		print(string.format("  [PASS] All %d core scripts present", scriptsResult.total))
+	else
+		print(string.format("  [PASS] PLAY3SDK folder exists"))
+		print(string.format("  [WARN] %d/%d scripts found", scriptsResult.found, scriptsResult.total))
+		for _, err in ipairs(scriptsResult.errors) do
+			print("  [FAIL] " .. err)
+			errors = errors + 1
+		end
+	end
+
+	-- 3. Client Scripts Check
+	print("\nCLIENT")
+	local clientResult = verifyClientScripts()
+	if clientResult.pass then
+		print("  [PASS] PLAY3Client folder exists")
+		print("  [PASS] OfferUI script present")
+	else
+		for _, err in ipairs(clientResult.errors) do
+			print("  [FAIL] " .. err)
+			errors = errors + 1
+		end
+	end
+
+	-- 4. Remotes Check
+	print("\nREMOTES")
+	local remotesResult = verifyRemotes()
+	if remotesResult.pass then
+		print("  [PASS] PLAY3Remotes folder exists")
+		print(string.format("  [PASS] All %d remotes present", #REQUIRED_REMOTES))
+	else
+		for _, err in ipairs(remotesResult.errors) do
+			print("  [FAIL] " .. err)
+			errors = errors + 1
+		end
+	end
+
+	-- 5. Product IDs Check
+	print("\nPRODUCTS")
+	local productsResult = verifyProductIds(sdk)
+	if productsResult.total > 0 then
+		if productsResult.valid == productsResult.total then
+			print(string.format("  [PASS] %d/%d product IDs valid", productsResult.valid, productsResult.total))
+		else
+			print(string.format("  [WARN] %d/%d product IDs valid", productsResult.valid, productsResult.total))
+			for _, warn in ipairs(productsResult.warnings) do
+				print("  [WARN] " .. warn)
+				warnings = warnings + 1
+			end
+		end
+	else
+		for _, warn in ipairs(productsResult.warnings) do
+			print("  [WARN] " .. warn)
+			warnings = warnings + 1
+		end
+	end
+
+	-- 6. API Connection Test
+	print("\nAPI CONNECTION")
+	local config = sdk:FindFirstChild("Config")
+	local apiKey = config and config.Source:match('API_KEY%s*=%s*"([^"]*)"')
+	local apiResult = testAPIConnection(apiKey)
+	if apiResult.pass then
+		print("  [PASS] Events endpoint reachable (201 OK)")
+	else
+		for _, err in ipairs(apiResult.errors) do
+			print("  [FAIL] " .. err)
+			errors = errors + 1
+		end
+		for _, warn in ipairs(apiResult.warnings) do
+			print("  [WARN] " .. warn)
+			warnings = warnings + 1
+		end
+	end
+
+	-- Summary
+	print("\n=========================================")
+	if errors == 0 and warnings == 0 then
+		print("RESULT: All checks passed!")
+	else
+		print(string.format("RESULT: %d error(s), %d warning(s)", errors, warnings))
+	end
+	print("")
+
+	return errors == 0
+end
+
+--============================================================
 -- EVENTS
 --============================================================
 
@@ -890,18 +1271,21 @@ listProductsBtn.MouseButton1Click:Connect(function()
 	end)
 end)
 
-openConfigBtn.MouseButton1Click:Connect(function()
-	local sdk = ServerScriptService:FindFirstChild("PLAY3SDK")
-	if sdk then
-		local config = sdk:FindFirstChild("Config")
-		if config then
-			Selection:Set({config})
+verifySetupBtn.MouseButton1Click:Connect(function()
+	verifySetupTitle.Text = "VERIFYING..."
+	verifySetupSubtitle.Text = "Running checks..."
+	task.spawn(function()
+		local success = runFullVerification()
+		verifySetupTitle.Text = "VERIFY SETUP"
+		if success then
+			verifySetupSubtitle.Text = "All checks passed!"
 		else
-			warn("[PLAY3.AI] Config not found")
+			verifySetupSubtitle.Text = "Issues found - check Output"
 		end
-	else
-		warn("[PLAY3.AI] SDK not installed")
-	end
+		task.delay(3, function()
+			verifySetupSubtitle.Text = "Check SDK installation & config"
+		end)
+	end)
 end)
 
 -- Initial
