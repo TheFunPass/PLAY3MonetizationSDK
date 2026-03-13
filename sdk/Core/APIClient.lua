@@ -14,10 +14,8 @@ APIClient.__index = APIClient
 -- API endpoints
 local ENDPOINTS = {
 	ACTIONS = "/actions",
-	OUTCOME = "/outcome",
-	OUTCOME_BATCH = "/outcome/batch",
-	SESSION_END = "/session_end",
-	SESSION_END_BATCH = "/session_end/batch",
+	ROBLOX_EVENTS = "/roblox-events",
+	ROBLOX_EVENTS_BATCH = "/roblox-events/batch",
 }
 
 -- Batching configuration
@@ -41,7 +39,7 @@ end
 function APIClient.new(config)
 	local self = setmetatable({}, APIClient)
 	self.config = config
-	self.baseUrl = config.API_URL or "https://api.play3.ai"
+	self.baseUrl = config.API_URL or "https://play3-ai-assistant-605640375727.us-central1.run.app"
 	self.apiKey = config.API_KEY
 	self.debug = config.debug or false
 	self.gameId = tostring(game.GameId)
@@ -92,12 +90,21 @@ end
 	Send batch of outcomes
 ]]
 function APIClient:_sendOutcomeBatch(batch)
-	local url = self.baseUrl .. ENDPOINTS.OUTCOME_BATCH
+	local url = self.baseUrl .. ENDPOINTS.ROBLOX_EVENTS_BATCH
+
+	-- Transform batch to new format: each item needs {timestamp, data}
+	local events = {}
+	for _, item in ipairs(batch) do
+		table.insert(events, {
+			timestamp = item.timestamp,
+			data = item.data,
+		})
+	end
 
 	local body = HttpService:JSONEncode({
-		eventType = "outcome_batch",
+		eventType = "outcome",
 		gameId = self.gameId,
-		outcomes = batch,
+		events = events,
 	})
 
 	task.spawn(function()
@@ -113,7 +120,7 @@ function APIClient:_sendOutcomeBatch(batch)
 			})
 		end)
 
-		if success and response.StatusCode == 200 then
+		if success and response.StatusCode == 201 then
 			if self.debug then
 				print("[PLAY3 API] Sent outcome batch:", #batch, "items")
 			end
@@ -137,14 +144,15 @@ end
 	Fallback: send outcomes individually
 ]]
 function APIClient:_sendOutcomesIndividually(batch)
-	local url = self.baseUrl .. ENDPOINTS.OUTCOME
+	local url = self.baseUrl .. ENDPOINTS.ROBLOX_EVENTS
 
-	for _, outcomeData in ipairs(batch) do
+	for _, item in ipairs(batch) do
 		task.spawn(function()
 			local body = HttpService:JSONEncode({
 				eventType = "outcome",
 				gameId = self.gameId,
-				outcome = outcomeData,
+				timestamp = item.timestamp,
+				data = item.data,
 			})
 
 			pcall(function()
@@ -167,12 +175,21 @@ end
 	Send batch of session ends
 ]]
 function APIClient:_sendSessionEndBatch(batch)
-	local url = self.baseUrl .. ENDPOINTS.SESSION_END_BATCH
+	local url = self.baseUrl .. ENDPOINTS.ROBLOX_EVENTS_BATCH
+
+	-- Transform batch to new format: each item needs {timestamp, data}
+	local events = {}
+	for _, item in ipairs(batch) do
+		table.insert(events, {
+			timestamp = item.timestamp,
+			data = item.data,
+		})
+	end
 
 	local body = HttpService:JSONEncode({
-		eventType = "session_end_batch",
+		eventType = "session_end",
 		gameId = self.gameId,
-		sessions = batch,
+		events = events,
 	})
 
 	task.spawn(function()
@@ -188,7 +205,7 @@ function APIClient:_sendSessionEndBatch(batch)
 			})
 		end)
 
-		if success and response.StatusCode == 200 then
+		if success and response.StatusCode == 201 then
 			if self.debug then
 				print("[PLAY3 API] Sent session_end batch:", #batch, "items")
 			end
@@ -208,14 +225,15 @@ end
 	Fallback: send session ends individually
 ]]
 function APIClient:_sendSessionEndsIndividually(batch)
-	local url = self.baseUrl .. ENDPOINTS.SESSION_END
+	local url = self.baseUrl .. ENDPOINTS.ROBLOX_EVENTS
 
-	for _, sessionData in ipairs(batch) do
+	for _, item in ipairs(batch) do
 		task.spawn(function()
 			local body = HttpService:JSONEncode({
 				eventType = "session_end",
 				gameId = self.gameId,
-				session = sessionData,
+				timestamp = item.timestamp,
+				data = item.data,
 			})
 
 			pcall(function()
@@ -304,26 +322,23 @@ end
 	}
 ]]
 function APIClient:reportOutcome(data)
-	-- Format to match schema
-	local outcomeData = {
-		playerId = hashPlayerId(data.playerId),
+	-- Format to match new API schema: {timestamp, data}
+	local queueItem = {
 		timestamp = getISOTimestamp(),
-
-		result = data.result,
-		productId = tostring(data.productId),
-		price = data.price or 0,
-		timeToDecisionSec = data.timeToDecisionSec or 0,
-
-		group = data.group or "test",
-
-		stateAtOffer = data.stateAtOffer or {},
-
-		sessionAtOffer = data.sessionAtOffer or {},
-
-		segmentAtOffer = data.segmentAtOffer or {},
+		data = {
+			playerId = hashPlayerId(data.playerId),
+			result = data.result,
+			productId = tostring(data.productId),
+			price = data.price or 0,
+			timeToDecisionSec = data.timeToDecisionSec or 0,
+			group = data.group or "test",
+			stateAtOffer = data.stateAtOffer or {},
+			sessionAtOffer = data.sessionAtOffer or {},
+			segmentAtOffer = data.segmentAtOffer or {},
+		},
 	}
 
-	table.insert(self.outcomeQueue, outcomeData)
+	table.insert(self.outcomeQueue, queueItem)
 
 	-- Flush immediately if queue is full
 	if #self.outcomeQueue >= BATCH_MAX_SIZE then
@@ -357,40 +372,35 @@ end
 	}
 ]]
 function APIClient:reportSessionEnd(data)
-	-- Format to match schema
-	local sessionData = {
-		playerId = hashPlayerId(data.playerId),
+	-- Format to match new API schema: {timestamp, data}
+	local queueItem = {
 		timestamp = getISOTimestamp(),
-
-		sessionId = data.sessionId or HttpService:GenerateGUID(false),
-		sessionNumber = data.sessionNumber or 1,
-		isFirstSession = data.isFirstSession or false,
-		daysSinceLastSession = data.daysSinceLastSession,
-
-		group = data.group or "test",
-
-		duration = data.duration or {
-			totalSec = data.sessionDurationSec or 0,
-			activePlaySec = data.sessionDurationSec or 0,
+		data = {
+			playerId = hashPlayerId(data.playerId),
+			sessionId = data.sessionId or HttpService:GenerateGUID(false),
+			sessionNumber = data.sessionNumber or 1,
+			isFirstSession = data.isFirstSession or false,
+			daysSinceLastSession = data.daysSinceLastSession,
+			group = data.group or "test",
+			duration = data.duration or {
+				totalSec = data.sessionDurationSec or 0,
+				activePlaySec = data.sessionDurationSec or 0,
+			},
+			offers = data.offers or {
+				shown = data.offersShown or 0,
+				dismissed = data.offersDismissed or 0,
+				purchased = data.purchasesMade or 0,
+			},
+			spend = data.spend or {
+				totalRobux = data.totalRobuxSpent or 0,
+				productsPurchased = data.productsPurchased or {},
+			},
+			finalState = data.finalState or {},
+			segment = data.segment or {},
 		},
-
-		offers = data.offers or {
-			shown = data.offersShown or 0,
-			dismissed = data.offersDismissed or 0,
-			purchased = data.purchasesMade or 0,
-		},
-
-		spend = data.spend or {
-			totalRobux = data.totalRobuxSpent or 0,
-			productsPurchased = data.productsPurchased or {},
-		},
-
-		finalState = data.finalState or {},
-
-		segment = data.segment or {},
 	}
 
-	table.insert(self.sessionEndQueue, sessionData)
+	table.insert(self.sessionEndQueue, queueItem)
 
 	-- Flush immediately if queue is full
 	if #self.sessionEndQueue >= BATCH_MAX_SIZE then
