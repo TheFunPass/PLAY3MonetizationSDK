@@ -1,0 +1,23 @@
+{
+  "version": "5.2.0",
+  "files": {
+    "init.lua": { "type": "ModuleScript" },
+    "Config.lua": { "type": "ModuleScript" },
+    "Core/APIClient.lua": { "type": "ModuleScript" },
+    "Core/SignalBuilder.lua": { "type": "ModuleScript" },
+    "Core/DecisionCache.lua": { "type": "ModuleScript" },
+    "Core/MarketplaceWrapper.lua": { "type": "ModuleScript" },
+    "Collectors/ProfileCollector.lua": { "type": "ModuleScript" },
+    "Collectors/SessionCollector.lua": { "type": "ModuleScript" },
+    "Collectors/StateCollector.lua": { "type": "ModuleScript" },
+    "Collectors/DeviceCollector.lua": { "type": "ModuleScript" },
+    "Analytics/PLAY3_Analytics.lua": { "type": "Script" },
+    "Analytics/Profileanalyzer.lua": { "type": "Script" },
+    "Analytics/HashLib/init.lua": { "type": "ModuleScript" },
+    "Analytics/HashLib/Base64.lua": { "type": "ModuleScript" }
+  },
+  "client": {
+    "OfferUI.lua": { "type": "LocalScript" },
+    "AutoStateClient.lua": { "type": "LocalScript" }
+  }
+}
