@@ -324,28 +324,37 @@ end
 		playerId = number,
 		result = "purchased" | "dismissed" | "natural_purchase",
 		productId = string,
+		promptId = string,
+		decisionId = string,
+		patternId = string,
+		source = "llm" | "cache",
 		price = number,
 		timeToDecisionSec = number,
 		group = "test" | "control",
 		stateAtOffer = { ... },
 		sessionAtOffer = { ... },
 		segmentAtOffer = { ... },
+		playerProfile = { ... },
 	}
 ]]
 function APIClient:reportOutcome(data)
-	-- Format to match new API schema: {timestamp, data}
 	local queueItem = {
 		timestamp = getISOTimestamp(),
 		data = {
 			playerId = hashPlayerId(data.playerId),
 			result = data.result,
 			productId = tostring(data.productId),
+			promptId = data.promptId,
+			decisionId = data.decisionId,
+			patternId = data.patternId,
+			source = data.source,
 			price = data.price or 0,
 			timeToDecisionSec = data.timeToDecisionSec or 0,
 			group = data.group or "test",
 			stateAtOffer = data.stateAtOffer or {},
 			sessionAtOffer = data.sessionAtOffer or {},
 			segmentAtOffer = data.segmentAtOffer or {},
+			playerProfile = data.playerProfile or {},
 		},
 	}
 
@@ -360,6 +369,56 @@ function APIClient:reportOutcome(data)
 
 	if self.debug then
 		print("[PLAY3 API] Outcome queued, queue size:", #self.outcomeQueue)
+	end
+end
+
+--[[
+	Report decision (when LLM or cache makes a decision)
+	Logs full context at decision time for ML training
+]]
+function APIClient:reportDecision(data)
+	local url = self.baseUrl .. ENDPOINTS.ROBLOX_EVENTS
+
+	local body = HttpService:JSONEncode({
+		eventType = "decision",
+		gameId = self.gameId,
+		timestamp = getISOTimestamp(),
+		data = {
+			playerId = hashPlayerId(data.playerId),
+			decisionId = data.decisionId,
+			patternId = data.patternId,
+			source = data.source,
+			decision = {
+				show = data.decision.show,
+				promptId = data.decision.promptId,
+				tier = data.decision.tier,
+				confidence = data.decision.confidence,
+			},
+			context = {
+				gameState = data.gameState or {},
+				sessionContext = data.sessionContext or {},
+				segment = data.segment or {},
+				playerProfile = data.playerProfile or {},
+			},
+		},
+	})
+
+	task.spawn(function()
+		pcall(function()
+			HttpService:RequestAsync({
+				Url = url,
+				Method = "POST",
+				Headers = {
+					["Content-Type"] = "application/json",
+					["x-api-key"] = self.apiKey or "",
+				},
+				Body = body,
+			})
+		end)
+	end)
+
+	if self.debug then
+		print("[PLAY3 API] Decision logged:", data.decision.promptId, "source:", data.source)
 	end
 end
 

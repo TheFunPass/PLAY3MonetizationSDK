@@ -1,1 +1,1 @@
-{"version":"5.2.0","changelog":"Added auto-states (sessionMinutes, idleMinutes, timeOfDay, isWeekend, leaderstats)"}
+{"version":"5.3.0","changelog":"Added ML training support: decisionId, patternId, source tracking, playerProfile in outcomes, decision event logging"}

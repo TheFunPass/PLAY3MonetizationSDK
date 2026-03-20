@@ -17,6 +17,7 @@
 local Players = game:GetService("Players")
 local MarketplaceService = game:GetService("MarketplaceService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
 -- Core modules
 local Config = require(script.Parent.Config)
@@ -35,7 +36,7 @@ local ProfileCollector = require(script.Parent.Collectors.ProfileCollector)
 
 local PLAY3 = {}
 PLAY3.__index = PLAY3
-PLAY3.VERSION = "5.2.0"
+PLAY3.VERSION = "5.3.0"
 
 -- Simple Signal implementation
 local function createSignal()
@@ -498,21 +499,18 @@ function PLAY3:SetOfferReady(player, ready)
 		print("[PLAY3] SetOfferReady:", player.Name, ready)
 	end
 
-	-- If ready and there's a queued offer, show it
 	if ready and playerQueuedOffer[playerId] then
 		local queued = playerQueuedOffer[playerId]
 		local age = os.time() - queued.queuedAt
 
-		-- Check if offer is still valid (not expired)
 		if age <= QUEUED_OFFER_EXPIRY then
 			playerQueuedOffer[playerId] = nil
-			self:_showOffer(player, queued.decision, queued.state, queued.payload)
+			self:_showOffer(player, queued.decision, queued.state, queued.payload, queued.mlContext)
 
 			if debugEnabled then
 				print("[PLAY3] Showing queued offer (age:", age, "s)")
 			end
 		else
-			-- Discard expired offer
 			playerQueuedOffer[playerId] = nil
 			if debugEnabled then
 				print("[PLAY3] Discarded expired queued offer (age:", age, "s)")
@@ -578,7 +576,6 @@ function PLAY3:ShowQueuedOffer(player, windowDuration)
 		local age = os.time() - queued.queuedAt
 
 		if age <= QUEUED_OFFER_EXPIRY then
-			-- Store queue metadata for analytics before clearing
 			local queueMetadata = {
 				wasQueued = true,
 				queueDurationSec = age,
@@ -587,7 +584,7 @@ function PLAY3:ShowQueuedOffer(player, windowDuration)
 			}
 
 			playerQueuedOffer[playerId] = nil
-			self:_showOfferFromQueue(player, queued.decision, queued.state, queued.payload, queueMetadata)
+			self:_showOfferFromQueue(player, queued.decision, queued.state, queued.payload, queueMetadata, queued.mlContext)
 
 			if debugEnabled then
 				print("[PLAY3] Showed queued offer (queueDuration:", age, "s)")
@@ -682,31 +679,53 @@ function PLAY3:_evaluateState(player)
 		end)
 
 		if success and result then
-			-- Debug: Print full AI response
 			if debugEnabled then
-				local HttpService = game:GetService("HttpService")
 				print("[PLAY3] ========== AI RESPONSE ==========")
 				print(HttpService:JSONEncode(result))
 				print("[PLAY3] ====================================")
 			end
 
-			-- Handle both response formats: {decision:{...}} or {success:true, data:{decision:{...}}}
 			local decision = result.decision or (result.data and result.data.decision) or result.data or result
 
 			if decision and type(decision) == 'table' then
 				if decision.show then
-					-- Check if player has dismissed this offer too many times
 					if self.decisionCache:isProductSuppressed(playerId, decision.promptId) then
 						if debugEnabled then
 							print('[PLAY3] AI decision: show, but player dismissed too many times -', decision.promptId)
 						end
 					else
-						-- Only cache "show" decisions - suppressions are often player-specific
-						-- (e.g., "too_soon_after_purchase") and shouldn't apply to other players
 						self.decisionCache:store(state, decision)
 						self.decisionCache:recordAttempt(state)
 						self.decisionCache:recordOfferShown(playerId, decision.promptId)
-						self:_showOffer(player, decision, state, payload)
+
+						local decisionId = HttpService:GenerateGUID(false)
+						local patternId = self.decisionCache:generateFingerprint(state)
+						local profileData = collectors.profile:collect(player)
+						local sessionData = collectors.session:collect(player)
+
+						self.apiClient:reportDecision({
+							playerId = playerId,
+							decisionId = decisionId,
+							patternId = patternId,
+							source = "llm",
+							decision = decision,
+							gameState = state,
+							sessionContext = {
+								sessionId = sessionData.sessionId,
+								sessionNumber = sessionData.sessionNumber,
+								sessionDurationSec = sessionData.sessionDurationSec,
+								isFirstSession = sessionData.isFirstSession,
+							},
+							segment = payload.segment,
+							playerProfile = profileData,
+						})
+
+						self:_showOffer(player, decision, state, payload, {
+							decisionId = decisionId,
+							patternId = patternId,
+							source = "llm",
+							playerProfile = profileData,
+						})
 
 						if debugEnabled then
 							print('[PLAY3] AI decision: show', decision.promptId, 'tier', decision.tier)
@@ -732,7 +751,37 @@ function PLAY3:_evaluateState(player)
 			end
 			self.decisionCache:recordAttempt(state)
 			self.decisionCache:recordOfferShown(playerId, decision.promptId)
-			self:_showOffer(player, decision, state, nil)
+
+			local decisionId = HttpService:GenerateGUID(false)
+			local patternId = self.decisionCache:generateFingerprint(state)
+			local profileData = collectors.profile:collect(player)
+			local sessionData = collectors.session:collect(player)
+			local offerHistory = playerOfferHistory[playerId] or {}
+			local payload = self.signalBuilder:build(player, offerHistory)
+
+			self.apiClient:reportDecision({
+				playerId = playerId,
+				decisionId = decisionId,
+				patternId = patternId,
+				source = "cache",
+				decision = decision,
+				gameState = state,
+				sessionContext = {
+					sessionId = sessionData.sessionId,
+					sessionNumber = sessionData.sessionNumber,
+					sessionDurationSec = sessionData.sessionDurationSec,
+					isFirstSession = sessionData.isFirstSession,
+				},
+				segment = payload.segment,
+				playerProfile = profileData,
+			})
+
+			self:_showOffer(player, decision, state, payload, {
+				decisionId = decisionId,
+				patternId = patternId,
+				source = "cache",
+				playerProfile = profileData,
+			})
 		elseif debugEnabled then
 			print("[PLAY3] Suppressed - reason:", reason or cacheReason)
 		end
@@ -746,15 +795,14 @@ end
 --[[
 	Internal: Show offer from queue with metadata tracking
 ]]
-function PLAY3:_showOfferFromQueue(player, decision, state, payload, queueMetadata)
-	-- Pass queue metadata through to main _showOffer
-	self:_showOfferInternal(player, decision, state, payload, queueMetadata)
+function PLAY3:_showOfferFromQueue(player, decision, state, payload, queueMetadata, mlContext)
+	self:_showOfferInternal(player, decision, state, payload, queueMetadata, mlContext)
 end
 
 --[[
-	Internal: Main offer display logic with optional queue metadata
+	Internal: Main offer display logic with optional queue metadata and ML context
 ]]
-function PLAY3:_showOfferInternal(player, decision, state, payload, queueMetadata)
+function PLAY3:_showOfferInternal(player, decision, state, payload, queueMetadata, mlContext)
 	local playerGroup = playerGroups[player.UserId] or GROUP_TEST
 	local playerId = player.UserId
 
@@ -830,8 +878,8 @@ function PLAY3:_showOfferInternal(player, decision, state, payload, queueMetadat
 		engagementLevel = self:_getEngagementLevel(sessionData.sessionDurationSec or 0),
 	}
 
-	-- Build pending offer with queue metadata if available
 	local currentState = collectors.state:collect(player)
+	mlContext = mlContext or {}
 
 	pendingOffers[player.UserId] = {
 		promptId = promptId,
@@ -840,13 +888,16 @@ function PLAY3:_showOfferInternal(player, decision, state, payload, queueMetadat
 		tier = tier,
 		offerTimestamp = os.time(),
 		stateAtOffer = state,
-		stateAtShow = currentState,  -- Current state when shown (may differ from decision state)
+		stateAtShow = currentState,
 		sessionAtOffer = sessionAtOffer,
 		segmentAtOffer = segmentAtOffer,
-		-- Queue tracking
 		wasQueued = queueMetadata and queueMetadata.wasQueued or false,
 		queueDurationSec = queueMetadata and queueMetadata.queueDurationSec or 0,
 		windowDurationSec = queueMetadata and queueMetadata.windowDurationSec or nil,
+		decisionId = mlContext.decisionId,
+		patternId = mlContext.patternId,
+		source = mlContext.source,
+		playerProfile = mlContext.playerProfile,
 	}
 
 	collectors.session:recordOfferShown(player, promptId)
@@ -874,23 +925,22 @@ end
 --[[
 	Public-facing _showOffer that handles queueing logic
 	Called by _evaluateState when AI decides to show an offer
+	mlContext contains: decisionId, patternId, source, playerProfile
 ]]
-function PLAY3:_showOffer(player, decision, state, payload)
+function PLAY3:_showOffer(player, decision, state, payload, mlContext)
 	local playerId = player.UserId
 
-	-- Check if player is ready for offers
 	if not self:IsOfferReady(player) then
-		-- Only queue if no offer already queued (and not in window-only mode)
 		local existing = playerQueuedOffer[playerId]
 		if not existing or existing.windowOnly then
 			playerQueuedOffer[playerId] = {
 				decision = decision,
 				state = state,
 				payload = payload,
+				mlContext = mlContext,
 				queuedAt = os.time(),
 			}
 
-			-- Fire event so game can react to queued offer
 			PLAY3.OnOfferQueued:Fire(player, {
 				promptId = decision.promptId,
 				tier = decision.tier or 1,
@@ -905,26 +955,23 @@ function PLAY3:_showOffer(player, decision, state, payload)
 		return
 	end
 
-	-- Check if we're in window mode - capture window metadata
 	local windowInfo = playerQueuedOffer[playerId]
 	local queueMetadata = nil
 
 	if windowInfo and windowInfo.windowOnly then
-		-- Offer arrived during open window
 		queueMetadata = {
-			wasQueued = false,  -- Not queued, shown during window
+			wasQueued = false,
 			queueDurationSec = 0,
 			windowDurationSec = windowInfo.windowDurationSec,
 		}
-		playerQueuedOffer[playerId] = nil  -- Clear window marker
+		playerQueuedOffer[playerId] = nil
 
 		if debugEnabled then
 			print("[PLAY3] Offer arrived during window:", player.Name, decision.promptId)
 		end
 	end
 
-	-- Show the offer
-	self:_showOfferInternal(player, decision, state, payload, queueMetadata)
+	self:_showOfferInternal(player, decision, state, payload, queueMetadata, mlContext)
 end
 
 function PLAY3:_findProduct(promptId)
@@ -978,6 +1025,10 @@ function PLAY3:RecordResult(player, promptId, result)
 			playerId = player.UserId,
 			result = result,
 			productId = offerData.productId,
+			promptId = offerData.promptId,
+			decisionId = offerData.decisionId,
+			patternId = offerData.patternId,
+			source = offerData.source,
 			price = offerData.price,
 			timeToDecisionSec = timeToDecision,
 			group = playerGroup,
@@ -985,7 +1036,7 @@ function PLAY3:RecordResult(player, promptId, result)
 			stateAtShow = offerData.stateAtShow,
 			sessionAtOffer = offerData.sessionAtOffer,
 			segmentAtOffer = offerData.segmentAtOffer,
-			-- Queue tracking
+			playerProfile = offerData.playerProfile,
 			wasQueued = offerData.wasQueued or false,
 			queueDurationSec = offerData.queueDurationSec or 0,
 			windowDurationSec = offerData.windowDurationSec,
@@ -1067,6 +1118,8 @@ function PLAY3:_setupPurchaseTracking()
 				successes = sessionData.successes or 0,
 			}
 
+			local profileData = collectors.profile:collect(player)
+
 			self.apiClient:reportOutcome({
 				playerId = userId,
 				result = RESULT_NATURAL,
@@ -1080,6 +1133,7 @@ function PLAY3:_setupPurchaseTracking()
 					spendTier = self:_getSpendTier(totalSpent),
 					engagementLevel = self:_getEngagementLevel(sessionData.sessionDurationSec or 0),
 				},
+				playerProfile = profileData,
 			})
 
 			collectors.session:recordPurchase(player, 0) -- Natural purchase, price unknown
