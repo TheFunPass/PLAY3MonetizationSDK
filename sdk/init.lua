@@ -36,7 +36,7 @@ local ProfileCollector = require(script.Parent.Collectors.ProfileCollector)
 
 local PLAY3 = {}
 PLAY3.__index = PLAY3
-PLAY3.VERSION = "5.3.0"
+PLAY3.VERSION = "5.4.0"
 
 -- Simple Signal implementation
 local function createSignal()
@@ -1138,6 +1138,66 @@ function PLAY3:_setupPurchaseTracking()
 
 			collectors.session:recordPurchase(player, 0) -- Natural purchase, price unknown
 		end
+	end)
+
+	-- Gamepass purchase tracking
+	MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gamePassId, wasPurchased)
+		if not wasPurchased then return end
+		if not player then return end
+
+		local userId = player.UserId
+
+		if debugEnabled then
+			print("[PLAY3] Natural gamepass purchase:", player.Name, gamePassId)
+		end
+
+		-- Fetch gamepass price
+		local price = 0
+		pcall(function()
+			local info = MarketplaceService:GetProductInfo(gamePassId, Enum.InfoType.GamePass)
+			price = info.PriceInRobux or 0
+		end)
+
+		local sessionData = collectors.session:collect(player)
+		local stateData = collectors.state:collect(player)
+		local profileData = collectors.profile:collect(player)
+
+		local purchases = playerPurchases[userId] or {}
+		table.insert(purchases, { productId = gamePassId, price = price, productType = "gamepass" })
+		playerPurchases[userId] = purchases
+
+		local totalSpent = 0
+		for _, p in ipairs(purchases) do
+			totalSpent = totalSpent + (p.price or 0)
+		end
+
+		self.apiClient:reportOutcome({
+			playerId = userId,
+			result = "natural_gamepass",
+			productId = gamePassId,
+			productType = "gamepass",
+			price = price,
+			timeToDecisionSec = 0,
+			group = playerGroups[userId] or GROUP_TEST,
+			stateAtOffer = stateData,
+			sessionAtOffer = {
+				sessionId = sessionData.sessionId,
+				sessionNumber = sessionData.sessionNumber or 1,
+				sessionDurationSec = sessionData.sessionDurationSec or 0,
+				isFirstSession = sessionData.isFirstSession or false,
+				daysSinceLastSession = sessionData.daysSinceLastSession,
+				offersShown = sessionData.offersShown or 0,
+				offersDismissed = sessionData.offersDismissed or 0,
+				purchasesMade = sessionData.purchasesMade or 0,
+			},
+			segmentAtOffer = {
+				spendTier = self:_getSpendTier(totalSpent),
+				engagementLevel = self:_getEngagementLevel(sessionData.sessionDurationSec or 0),
+			},
+			playerProfile = profileData,
+		})
+
+		collectors.session:recordPurchase(player, price)
 	end)
 end
 

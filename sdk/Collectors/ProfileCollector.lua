@@ -8,6 +8,7 @@ local GroupService = game:GetService("GroupService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local LocalizationService = game:GetService("LocalizationService")
 local PolicyService = game:GetService("PolicyService")
+local UserInputService = game:GetService("UserInputService")
 
 local ProfileCollector = {}
 ProfileCollector.__index = ProfileCollector
@@ -69,11 +70,24 @@ function ProfileCollector:loadProfile(player)
 		-- Check if VIP server (Amendment PA-2026-001)
 		local isVIPServer = game.PrivateServerId ~= "" and game.PrivateServerId ~= nil
 
+		-- Device type detection
+		local deviceType = "Desktop"
+		pcall(function()
+			if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+				deviceType = "Mobile"
+			elseif UserInputService.GamepadEnabled and not UserInputService.KeyboardEnabled then
+				deviceType = "Console"
+			else
+				deviceType = "Desktop"
+			end
+		end)
+
 		local profile = {
 			isPremium = player.MembershipType == Enum.MembershipType.Premium,
 			accountAgeDays = player.AccountAge,
 			locale = player.LocaleId or "en-us",
 			ageBracket = ageBracket,
+			deviceType = deviceType,
 			-- Amendment PA-2026-001 fields
 			country = country,
 			hasVerifiedBadge = player.HasVerifiedBadge or false,
@@ -347,11 +361,22 @@ function ProfileCollector:collect(player)
 			end
 		end)
 
+		-- Device type detection for fallback
+		local deviceType = "Desktop"
+		pcall(function()
+			if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+				deviceType = "Mobile"
+			elseif UserInputService.GamepadEnabled and not UserInputService.KeyboardEnabled then
+				deviceType = "Console"
+			end
+		end)
+
 		return {
 			isPremium = player.MembershipType == Enum.MembershipType.Premium,
 			accountAgeDays = player.AccountAge,
 			locale = player.LocaleId or "en-us",
 			ageBracket = ageBracket,
+			deviceType = deviceType,
 			country = "unknown",
 			hasVerifiedBadge = player.HasVerifiedBadge or false,
 			pingMs = 0,
