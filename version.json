@@ -1,1 +1,1 @@
-{"version":"5.4.0","changelog":"Added deviceType to ProfileCollector, gamepass purchase tracking (natural_gamepass events)"}
+{"version":"5.5.0","changelog":"Session warmup, improved cache retention for converting patterns, reduced API call frequency"}

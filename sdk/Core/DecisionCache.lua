@@ -10,12 +10,12 @@ local DecisionCache = {}
 DecisionCache.__index = DecisionCache
 
 -- Configuration
-local DEFAULT_TTL = 600 -- 10 minutes
+local DEFAULT_TTL = 86400 -- 24 hours
 local MAX_CACHE_SIZE = 200
 local SIMILARITY_THRESHOLD = 0.7 -- 70% key match for fuzzy matching
 local MIN_ATTEMPTS_FOR_RATE = 3 -- Need 3+ attempts before trusting success rate
 local MIN_SUCCESS_RATE = 0.03 -- 3% minimum to keep showing
-local MIN_CHECK_INTERVAL = 30 -- Minimum seconds between evaluations per player
+local MIN_CHECK_INTERVAL = 120 -- Minimum seconds between evaluations per player
 local MAX_DISMISSALS_PER_PRODUCT = 2 -- Stop showing product after N dismissals in a session
 
 function DecisionCache.new(config)
@@ -187,8 +187,12 @@ end
 
 --[[
 	Check if entry is expired
+	Patterns with conversions never expire (they're proven to work)
 ]]
 function DecisionCache:isExpired(entry)
+	if entry.conversions and entry.conversions > 0 then
+		return false
+	end
 	local ttl = self.config.cacheTTL or DEFAULT_TTL
 	return (tick() - entry.timestamp) > ttl
 end

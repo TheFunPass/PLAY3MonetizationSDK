@@ -106,6 +106,12 @@ return {
 	cacheTTL = 600,
 
 	--==========================================================
+	-- OPTIONAL: Session Warmup
+	-- Skip AI calls for first N minutes of session
+	--==========================================================
+	warmupMinutes = 2,
+
+	--==========================================================
 	-- AUTO-COLLECTED STATES
 	-- These are tracked automatically without developer code.
 	-- Set to false to disable any you don't want.

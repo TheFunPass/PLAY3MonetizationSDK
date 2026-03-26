@@ -36,7 +36,7 @@ local ProfileCollector = require(script.Parent.Collectors.ProfileCollector)
 
 local PLAY3 = {}
 PLAY3.__index = PLAY3
-PLAY3.VERSION = "5.4.0"
+PLAY3.VERSION = "5.5.0"
 
 -- Simple Signal implementation
 local function createSignal()
@@ -644,11 +644,21 @@ end
 --============================================================
 
 function PLAY3:_evaluateState(player)
-	-- Skip AI calls entirely for control group (saves API costs)
+	-- Skip AI calls entirely for control group
 	local playerGroup = playerGroups[player.UserId] or GROUP_TEST
 	if playerGroup == GROUP_CONTROL then
 		if debugEnabled then
 			print("[PLAY3] Control group - skipping evaluation")
+		end
+		return
+	end
+
+	-- Skip AI calls during session warmup
+	local warmupSeconds = (Config.warmupMinutes or 2) * 60
+	local sessionData = collectors.session:collect(player)
+	if sessionData and sessionData.sessionDurationSec and sessionData.sessionDurationSec < warmupSeconds then
+		if debugEnabled then
+			print("[PLAY3] Session warmup - skipping evaluation (", math.floor(sessionData.sessionDurationSec), "s /", warmupSeconds, "s)")
 		end
 		return
 	end
