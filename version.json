@@ -1,1 +1,1 @@
-{"version":"5.5.0","changelog":"Session warmup, improved cache retention for converting patterns, reduced API call frequency"}
+{"version":"5.5.1","changelog":"Added client-side device detection with deviceSubType, inputType, and screen resolution tracking"}

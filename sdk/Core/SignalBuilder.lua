@@ -366,6 +366,8 @@ function SignalBuilder:build(player, offerHistory)
 		-- Device info (expanded)
 		device = {
 			platform = device.platform or "desktop",
+			deviceSubType = device.deviceSubType or "unknown",
+			inputType = device.inputType or "unknown",
 			isMobile = device.isMobile or false,
 			isConsole = device.isConsole or false,
 			isVR = device.isVR or false,

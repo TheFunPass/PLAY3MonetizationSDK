@@ -55,6 +55,8 @@ function DeviceCollector:receiveDeviceData(player, data)
 
 	playerDeviceData[player.UserId] = {
 		platform = data.platform or "unknown",
+		deviceSubType = data.deviceSubType or "unknown",
+		inputType = data.inputType or "unknown",
 		screenResX = data.screenResX or 0,
 		screenResY = data.screenResY or 0,
 		isMobile = data.isMobile or false,
@@ -70,6 +72,8 @@ function DeviceCollector:collect(player)
 	if data then
 		return {
 			platform = data.platform,
+			deviceSubType = data.deviceSubType,
+			inputType = data.inputType,
 			screenResX = data.screenResX,
 			screenResY = data.screenResY,
 			isMobile = data.isMobile,
@@ -79,6 +83,8 @@ function DeviceCollector:collect(player)
 	else
 		return {
 			platform = "unknown",
+			deviceSubType = "unknown",
+			inputType = "unknown",
 			screenResX = 0,
 			screenResY = 0,
 			isMobile = false,
