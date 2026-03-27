@@ -262,6 +262,7 @@ function APIClient:request(payload)
 	-- Format payload to match API expectations
 	local body = HttpService:JSONEncode({
 		action = "pricing",
+		gameId = self.gameId,
 		playerId = tostring(payload.playerId),
 		context = payload,
 	})
